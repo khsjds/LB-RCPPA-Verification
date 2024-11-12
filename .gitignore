@@ -1,0 +1,17 @@
+# .gitignore content
+# EasyCrypt
+*.eco
+*.vo
+*.glob
+
+# Tamarin
+*.spthy~
+*.th~
+
+# VSCode
+.vscode/
+*.code-workspace
+
+# OS specific
+.DS_Store
+Thumbs.db
