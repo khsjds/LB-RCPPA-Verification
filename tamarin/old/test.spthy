@@ -1,0 +1,458 @@
+theory LB_RCPPA_Revised
+begin
+
+/*********************************************************************/
+/**  0. GENERAL DECLARATIONS                                        **/
+/*********************************************************************/
+
+builtins: hashing, symmetric-encryption, signing, multiset
+
+/* ------------------------------------------------------------------ */
+/* -- Function Symbols --                                            */
+/* ------------------------------------------------------------------ */
+/**
+ * We declare function symbols to model cryptographic operations and
+ * domain-specific operations (pseudo-identity creation, ring membership, etc.).
+ */
+functions:
+    /* Hashing & Key/Pseudonym Generation */
+      H1/2             // e.g., partial private key hashing
+    , H2/2             // e.g., challenge hashing
+    , H3/1             // e.g., message hashing
+    , H4/2             // e.g., timestamp binding
+    , H5/2             // e.g., key-based pseudonym gen
+    , H6/2             // e.g., for Bi-GISIS KE transformations
+
+    /* Lattice-based placeholders */
+    , TrapGen/1        // Trapdoor generation, param is security param
+    , SampleMat/3      // Preimage sampling
+    , SIS_solve/1      // For SIS problem representation (forging attempt, etc.)
+    , BISIS_solve/2    // For Bi-GISIS attempt
+    , LatticeOp/2      // Generic "op" on lattice values
+
+    /* Protocol-Specific */
+    , ppid/2           // Pseudo-identity generation: ppid(k, ID)
+    , sessionKey/2     // sessionKey(privatePart, publicPart)
+    , ring/2           // ring(ppidSet, ringRand) or ring(ppid_i, ringRand)
+    , Sig/4            // Sig(Z, K, mu, B) = ring signature
+    , MsgPack/3        // MsgPack(message, ring, signature)
+    , timePeriod/2     // timePeriod(vehicle, periodValue)
+    , ke_authorized/2  // For "RSU authorizes a time period"
+    , Combine/2        // Combine PK parts in ring
+
+/* ------------------------------------------------------------------ */
+/* -- Facts & State Markers --                                       */
+/* ------------------------------------------------------------------ */
+/**
+ * Tamarin tracks the progress of the protocol using facts.
+ * Exclamation mark "!" indicates persistent facts (unbounded),
+ * while ephemeral facts vanish after they are consumed once.
+ */
+
+/* RTA-specific, RSU-specific, Vehicle-specific states
+facts:
+    !RTA/3              // !RTA(rtaID, mskSig, mskKE)
+  , !MPK/3              // !MPK(rtaID, mpkSig, mpkKE)
+
+  , !RSU/3              // !RSU(rtaID, rsuID, rsuSK)
+  , !RSUKey/2           // !RSUKey(rsuID, rsuPK)
+
+  , !Vehicle/4          // !Vehicle(rtaID, vehID, vSK1, vSK2) or store partial info
+  , !MemberList/5       // !MemberList(rtaID, vehID, validity, ppid, authKey)
+
+  , VehicleActiveCred/4 // VehicleActiveCred(vehID, ppid, authKey, validity)
+  , ReauthState/2       // ReauthState(vehID, targetRTA)
+
+  , SessionKey/3        // SessionKey(vehID, rsuID(or rtaID), keyVal)
+  , SignedMessage/3     // SignedMessage(vehID, message, ringUsed)
+  , VerifiedMessage/2   // VerifiedMessage(ppid, message)
+
+  , TimestampUsed/1     // TimestampUsed(T)
+
+  , KeyExchangeInit/2   // KeyExchangeInit(vehID, rsuID)
+  , KeyExchangeDone/3   // KeyExchangeDone(vehID, rsuID, keyVal)
+
+  , SigGenerated/4      // SigGenerated(vehID, msg, ringSet, sigStruct)
+  , SigVerified/2       // SigVerified(msg, ringSet)
+*/
+
+/*********************************************************************/
+/**  1. PROTOCOL RULES                                               **/
+/*********************************************************************/
+
+/**
+ * We organize the protocol into multiple phases:
+ *   1. System Setup
+ *   2. Vehicle Shares Production (KE)
+ *   3. Signature Generation
+ *   4. Message Verification
+ *   5. Reauthentication
+ *   6. Member List Update
+ *
+ * Each rule encodes a discrete step or event in Tamarin.
+ */
+
+/* ------------------------------------------------------------------ */
+/* PHASE 1: System Setup                                              */
+/* ------------------------------------------------------------------ */
+
+/* 1a. RTA Setup Rule */
+rule RTA_Setup:
+  [ Fr(~rtaID)
+  , Fr(~mskSig)
+  , Fr(~mskKE)
+  ]
+  --[ RTAInit(~rtaID) ]->
+  [
+    !RTA(~rtaID, ~mskSig, ~mskKE),
+    /* Master public keys could be derived from TrapGen(...) if you like, 
+       but we keep it abstract with "mpkSig" / "mpkKE" for demonstration. */
+    Let mpkSig = TrapGen(~mskSig)     // symbolic
+    Let mpkKE  = TrapGen(~mskKE)
+    , !MPK(~rtaID, mpkSig, mpkKE)
+    , Out(<~rtaID, mpkSig, mpkKE>)
+  ]
+
+/* 1b. RSU Setup Rule */
+rule RSU_Setup:
+  [ !RTA($rtaID, $mskSig, $mskKE)   // Must have an initialized RTA
+  , Fr(~rsuID)
+  , Fr(~rsuSK)
+  ]
+  --[ RSUInit(~rsuID) ]->
+  [
+    !RSU($rtaID, ~rsuID, ~rsuSK),
+    /* We might produce an RSU public key from 
+       ~rsuSK and the RTA's master parameters. */
+    Let rsuPK = LatticeOp(~rsuSK, $mskKE),
+    !RSUKey(~rsuID, rsuPK),
+    Out(<~rsuID, rsuPK>)
+  ]
+
+/* 1c. Vehicle Setup Rule */
+rule Vehicle_Setup:
+  [ !RTA($rtaID, $mskSig, $mskKE)
+  , !MPK($rtaID, $mpkSig, $mpkKE)
+  , Fr(~vehID)
+  , Fr(~vsk1)       // "Signature" private part
+  , Fr(~vsk2)       // "Key-exchange" private part
+  , Fr(~authKey)
+  , Fr(~validity)   // e.g., a numeric validity period
+  ]
+  --[ VehicleInit(~vehID) ]->
+  [
+    /* Pseudonym generation from ID & authKey. 
+       Alternatively, use ppid(authKey, ~vehID). */
+    Let vPPID = ppid(~authKey, ~vehID),
+    !Vehicle($rtaID, ~vehID, ~vsk1, ~vsk2),
+    !MemberList($rtaID, ~vehID, ~validity, vPPID, ~authKey),
+    /* The vehicle obtains its final config out-of-band or over a secure channel. */
+    Out(<~vehID, vPPID, ~authKey, ~validity>)
+  ]
+
+/* ------------------------------------------------------------------ */
+/* PHASE 2: Vehicle Shares Production (Key Exchange w/ RSU)           */
+/* ------------------------------------------------------------------ */
+
+/**
+ * This phase corresponds to your "Vehicle Shares Production" or "Bi-GISIS KE."
+ * We'll represent a handshake in two rules: an INIT from the vehicle, and a 
+ * response from the RSU that finalizes the shared session key.
+ */
+
+/* 2a. Vehicle Key Exchange (Initiation) */
+rule Vehicle_KE_Init:
+  [ !Vehicle($rtaID, ~vehID, ~vsk1, ~vsk2)
+  , !RSU($rtaID, ~rsuID, ~rsuSK)
+  , Fr(~nonce)
+  ]
+  --[ KEInit(~vehID, ~rsuID) ]->
+  [
+    /* The vehicle picks ephemeral data, 
+       let's produce a partial KE message. */
+    Let pubVeh = LatticeOp(~vsk2, $mpkKE),  // symbolic representation
+    KeyExchangeInit(~vehID, ~rsuID),
+    /* Output a tuple to model the ephemeral exchange. 
+       In practice, you might further structure messages. */
+    Out(<~vehID, pubVeh, ~nonce>)
+  ]
+
+/* 2b. RSU Responds, Session Key Established */
+rule RSU_KE_Response:
+  [ KeyExchangeInit(~vehID, ~rsuID)
+  , !RSU($rtaID, ~rsuID, ~rsuSK)
+  , In(<~vehID, ~pubVeh, ~nonce>)
+  , Fr(~rsuRand)
+  ]
+  --[ KEResponse(~rsuID, ~vehID) ]->
+  [
+    /* The RSU computes a session key (Bi-GISIS eq.). */
+    Let pubRSU     = LatticeOp(~rsuSK, $mpkKE),
+    Let sessionVal = sessionKey(~rsuSK, ~pubVeh),  // For both sides
+    KeyExchangeDone(~vehID, ~rsuID, sessionVal),
+
+    /* RSU sends ephemeral public part back to vehicle. */
+    Out(<~rsuID, pubRSU, sessionVal>)
+  ]
+
+/* ------------------------------------------------------------------ */
+/* PHASE 3: Signature Generation                                      */
+/* ------------------------------------------------------------------ */
+rule Signature_Generation:
+  [ !Vehicle($rtaID, ~vehID, ~vsk1, ~vsk2)
+  , Fr(~message)
+  , Fr(~ringRand)
+  , Fr(~ts)
+  ]
+  --[ SignMsg(~vehID, ~message) ]->
+  [
+    /* Suppose ppid is stored in MemberList. We do a membership check. */
+    /* In Tamarin, we can do a match on the membership or just do it abstractly. */
+    Let ringUsed = ring(~vehID, ~ringRand),     // ring might incorporate more pPIDs
+    Let zVal     = "ZVal"        // symbolic signature part
+    Let kVal     = "KVal"        // symbolic signature part
+    Let muVal    = H2(<~message, ~ts>) // simplified
+    Let bVal     = "BVal"        // partial private key usage
+    SigGenerated(~vehID, ~message, ringUsed, Sig(zVal,kVal,muVal,bVal)),
+
+    Out(MsgPack(~message, ringUsed, Sig(zVal, kVal, muVal, bVal)))
+  ]
+
+/* ------------------------------------------------------------------ */
+/* PHASE 4: Message Verification                                      */
+/* ------------------------------------------------------------------ */
+rule Message_Verification:
+  [ In(MsgPack(~msg, ~ringUsed, Sig(~zVal, ~kVal, ~muVal, ~bVal))) ]
+  --[ VerifyMsg(~ringUsed, ~msg) ]->
+  [
+    /* We can check norm bounds or SIS constraints with a restriction or by 
+       referencing them in a lemma. For now, we just produce VerifiedMessage. */
+    VerifiedMessage(~ringUsed, ~msg)
+  ]
+
+/* ------------------------------------------------------------------ */
+/* PHASE 5: Reauthentication                                          */
+/* ------------------------------------------------------------------ */
+/**
+ * In your protocol, the RTA queries the network to see if the vehicle's 
+ * credentials exist in other RTAs' ML. We approximate that with ephemeral facts.
+ */
+rule Reauth_Init:
+  [ !Vehicle($rtaID, ~vehID, ~vsk1, ~vsk2) ]
+  --[ ReauthRequest(~vehID) ]->
+  [ 
+    ReauthState(~vehID, $rtaID)
+    /* Potentially we ask other RTAs, receive data, etc. */
+  ]
+
+/* In a real Tamarin model, you'd show RTA->RTA queries and membership checks. 
+   We keep it symbolic. */
+rule Reauth_Complete:
+  [ ReauthState(~vehID, $rtaID)
+  , !MemberList($rtaID, ~vehID, ~validity, ~ppid, ~authKey)
+  ]
+  --[ ReauthSuccess(~vehID) ]->
+  [
+    /* The RTA re-adds or updates membership, possibly removing old data. */
+    /* If no prior ML entry was found, we do a full registration path. */
+    // Reauthentication done
+  ]
+
+/* ------------------------------------------------------------------ */
+/* PHASE 6: Member List Update (Pseudonym & Key Refresh)              */
+/* ------------------------------------------------------------------ */
+rule MemberList_Update_Init:
+  [ !Vehicle($rtaID, ~vehID, ~vsk1, ~vsk2)
+  , Fr(~newAuthKey)
+  , Fr(~newVal)
+  , !MemberList($rtaID, ~vehID, ~oldVal, ~oldPPID, ~oldKey)
+  ]
+  --[ MLUpdateRequest(~vehID) ]->
+  [
+    /* The RTA decides to rotate or refresh the vehicle's pseudonym, 
+       possibly ephemeral Bi-GISIS exchange. */
+    Let newPPID = ppid(~newAuthKey, ~vehID),
+    Out(<~vehID, newPPID, ~newAuthKey, ~newVal>)
+  ]
+
+rule MemberList_Update_Complete:
+  [ In(<~vehID, ~newPPID, ~newKey, ~newVal>)
+  , !MemberList($rtaID, ~vehID, ~oldVal, ~oldPPID, ~oldKey)
+  ]
+  --[ MLUpdateDone(~vehID) ]->
+  [
+    /* Overwrite old membership record. */
+    !MemberList($rtaID, ~vehID, ~newVal, ~newPPID, ~newKey)
+  ]
+
+
+/*********************************************************************/
+/**  2. RESTRICTIONS (INVARIANTS, ORDERING, ETC.)                   **/
+/*********************************************************************/
+
+/**
+ * Restrictions help Tamarin prune undesired or impossible traces:
+ *   - Enforce ordering (e.g., a message cannot be verified before it’s signed).
+ *   - Ensure fresh timestamps are not reused (for replay).
+ *   - Restrict that partial private keys or ephemeral secrets remain secret
+ *     unless intentionally leaked.
+ */
+
+/* Example: Each timestamp can only be used once. */
+restriction OneTimestampPerUse:
+  "∀ t #i #j.
+     VerifyMsg(r,m)@i & VerifyMsg(r',m')@j & i≠j
+     & t ~in m & t ~in m'     /* or some structural check that they share T */
+   ==> not(i=j)"
+
+/* Example: Must not sign a message before having set up a vehicle. */
+restriction MustRegisterBeforeSign:
+  "∀ vehID msg #i #j.
+     GenerateSignature(vehID, msg)@i & VehicleInit(vehID)@j
+   ==> j < i"
+
+/* Example: Must not verify a message before it is signed. */
+restriction SignBeforeVerify:
+  "∀ msg ringUsed #i #j.
+     VerifyMsg(ringUsed, msg)@j & SignMsg(vehID, msg)@i
+   ==> i < j"
+
+/* Example: No forging of partial private key in normal operation. 
+   (You can adapt so that the keys remain secret if not compromised, etc.) */
+restriction NoPPIDExfiltration:
+  "∀ rtaID vehID validity ppid authKey #i #j.
+     MemberList(rtaID, vehID, validity, ppid, authKey)@i
+     & K(ppid)@j
+   ==> false"
+
+/*********************************************************************/
+/**  3. LEMMAS (SECURITY PROPERTIES)                                 **/
+/*********************************************************************/
+
+/**
+ * Lemmas state the properties we want Tamarin to verify:
+ *   1. Message Authentication
+ *   2. Identity Privacy
+ *   3. Unlinkability
+ *   4. Conditional Privacy
+ *   5. Replay Attack Resistance
+ *   6. Message Integrity
+ *
+ * Tamarin attempts to either prove these lemmas or find counterexamples.
+ */
+
+/* ------------------------------------------------------------------ */
+/* 3.1. MESSAGE AUTHENTICATION                                       */
+/* ------------------------------------------------------------------ */
+/**
+ * We want to ensure that if a message is verified, 
+ * it was indeed signed by some legitimate vehicle.
+ */
+lemma MessageAuthentication:
+  "∀ msg ringUsed #i.
+     VerifyMsg(ringUsed, msg)@i
+   ==> (∃ vehID #j. SigGenerated(vehID, msg, ringUsed, _)@j & j < i)"
+
+/* ------------------------------------------------------------------ */
+/* 3.2. IDENTITY PRIVACY                                             */
+/* ------------------------------------------------------------------ */
+/**
+ * Identity privacy demands that the real identity vehID cannot
+ * be trivially learned from a ring signature or ppid alone.
+ * We can model that as “the adversary never learns vehID from
+ * the presence of ppid, except via an intended leak.” 
+ * 
+ * A typical approach is to show that ppid(vehID, authKey) 
+ * does not unify with an attacker pattern for vehID in an unprotected channel.
+ */
+lemma IdentityPrivacy:
+  "∀ vehID ppid #i. 
+     PPIDGenerated(vehID, ppid)@i
+   ==> not(K(vehID))"
+   
+/**
+ * The above is a simple placeholder. In practice, you might refine it 
+ * with e.g. 'unless the user already reveals vehID' or use a stronger 
+ * observational equivalence approach. 
+ */
+
+/* ------------------------------------------------------------------ */
+/* 3.3. UNLINKABILITY                                                */
+/* ------------------------------------------------------------------ */
+/**
+ * Unlinkability means an attacker cannot correlate two signatures 
+ * from the same vehicle across distinct time periods or ring sets. 
+ * We can express a high-level lemma that no single trace point 
+ * can "prove" two distinct ring signatures link to the same vehicle.
+ * 
+ * This is typically tested with observational equivalences, but 
+ * we can do a simpler symbolic check or rely on restrictions.
+ */
+lemma Unlinkability:
+  "∀ vehID msg1 ring1 msg2 ring2 #i #j.
+     SigGenerated(vehID, msg1, ring1, _)@i 
+     & SigGenerated(vehID, msg2, ring2, _)@j 
+     & i≠j
+   ==> not( (msg1, ring1) = (msg2, ring2) )"
+   
+/**
+ * This example states that each signature from the same vehicle 
+ * is distinct in message or ring usage. In practice, you’ll want 
+ * a more advanced equivalence property. 
+ */
+
+/* ------------------------------------------------------------------ */
+/* 3.4. CONDITIONAL PRIVACY                                          */
+/* ------------------------------------------------------------------ */
+/**
+ * The RTA can reveal identity if needed, but no other party can. 
+ * One approach: a lemma that states "If the attacker obtains vehID, 
+ * then that ID must come from the RTA’s ML (explicit reveal)."
+ */
+lemma ConditionalPrivacy:
+  "∀ vehID ppid #i.
+     K(vehID)@i
+   ==> (∃ rtaID validity authKey #j.
+         MemberList(rtaID, vehID, validity, ppid, authKey)@j 
+         & Reveal(rtaID, vehID)@j  )"
+/**
+ * Where "Reveal(rtaID, vehID)@j" is a hypothetical event 
+ * signifying that the RTA intentionally disclosed the real ID. 
+ * You can refine or adapt as your model requires.
+ */
+
+/* ------------------------------------------------------------------ */
+/* 3.5. REPLAY ATTACK RESISTANCE                                     */
+/* ------------------------------------------------------------------ */
+/**
+ * We ensure that a timestamp used once cannot be reused for the same message 
+ * with the same or different ring in a valid trace. Or that once a message 
+ * is verified, an identical message with the same signature cannot appear 
+ * again in a later step.
+ */
+lemma ReplayResistance:
+  "∀ msg ringUsed #i #j.
+     VerifyMsg(ringUsed, msg)@i & VerifyMsg(ringUsed, msg)@j & i≠j
+   ==> false"
+
+/* ------------------------------------------------------------------ */
+/* 3.6. MESSAGE INTEGRITY                                            */
+/* ------------------------------------------------------------------ */
+/**
+ * If a message is verified, it must not have been altered. 
+ * Symbolically, we can say if two verifications occur for the same ring 
+ * but different message content, that is not possible unless 
+ * the ring or signature differ.
+ */
+lemma MessageIntegrity:
+  "∀ ringUsed msg1 msg2 #i #j.
+     VerifyMsg(ringUsed, msg1)@i 
+     & VerifyMsg(ringUsed, msg2)@j
+     & msg1 ≠ msg2
+   ==> false"
+
+/*********************************************************************/
+/**  END OF FILE                                                     **/
+/*********************************************************************/
+
+end

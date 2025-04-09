@@ -1,0 +1,245 @@
+theory LB_RCPPA
+begin
+
+builtins: hashing, symmetric-encryption, signing, multiset
+
+/* Function Declarations */
+functions: ppid/2         // Pseudo-identity generation
+        , timestamp/0     // Timestamp operations
+        , valid/2         // Validity period checks
+        , ring/2          // Ring signature construction
+        , combine_keys/2  // For ring signature verification
+        , session_key/2   // For key exchange
+
+// State markers
+functions: INIT/0, READY/0, SIGNED/0, VERIFIED/0
+
+/* Global Rules */
+// RTA Setup - root of trust 
+rule Setup_RTA_State:
+    [ Fr(~msk_sig)
+    , Fr(~msk_ke) ]
+    --[ RTAInit() ]->
+    [ !RTA($rta, ~msk_sig, ~msk_ke)
+    , !MPK($rta, pk(~msk_sig), pk(~msk_ke))
+    , Out(<pk(~msk_sig), pk(~msk_ke)>) ]
+
+// RSU Setup  
+rule Setup_RSU:
+    [ Fr(~rid)    // Fresh RSU ID
+    , Fr(~rsk)    // Fresh RSU secret key
+    , !RTA($rta, msk_sig, msk_ke) ]
+    --[ RSUInit(~rid) ]->
+    [ !RSU($rta, ~rid, ~rsk)    // Changed $rid to $rta
+    , !RSUKey(~rid, pk(~rsk))
+    , Out(pk(~rsk)) ]
+
+// Vehicle Setup
+//rule Setup_Vehicle:
+//   [ Fr(~vid)
+//   , Fr(~kk)
+//   , !RTA($rta, msk_sig, msk_ke)
+//   , !MPK($rta, mpk_sig, mpk_ke) ]
+//   --[ VehicleInit(~vid)
+//     , AuthKeyGen(~vid, ~kk)
+//     , VehiclePersistent($rta, ~vid, 'exists') ]->
+//   [ !Vehicle($rta, ~vid, ~kk)
+//   , !VehiclePseudonym(~vid, ppid(~vid,~kk))
+//   , Out(ppid(~vid,~kk)) ]
+rule Setup_Vehicle_Init: // Vehicle initiates registration with RTA
+  [ Fr(~vid), !RTA($rta, msk_sig, msk_ke), !MPK($rta, mpk_sig, mpk_ke) ]
+  --[ VehicleSetupInit(~vid), InitRequest(~vid) ]->  // Mark start of setup sequence
+    [ VehicleState($rta, ~vid, 'init')  // Track vehicle setup state
+    , AuthSecChan($rta, 'vid_delivery', ~vid) ]  // 'vid_delivery' marks this is for vid transmission
+rule Auth_Sec_Channel_VID_Delivery: // Secure channel delivers vid to RTA
+  [ AuthSecChan(rta, 'vid_delivery', vid) ]
+  --[ DeliverSecureVID(vid, rta), VIDDelivered(vid) ]->
+    [ ReceivedVID(rta, vid) ]
+rule Setup_Vehicle_RTA: // RTA processes request and generates credentials
+  let pseudo_id = ppid(~kk, ~vp) in
+  [ ReceivedVID($rta, vid), !RTA($rta, msk_sig, msk_ke), Fr(~kk), Fr(~vp) ]
+  --[ VehicleSetupRTA(vid), PPIDCredentials(pseudo_id, ~kk, ~vp), PPIDGenerated(vid, pseudo_id) ]->  // Track vid-ppid relationship
+  [ VehicleState($rta, vid, 'processed')
+  , !MemberList($rta, vid, ~vp, pseudo_id, ~kk)
+  , AuthSecChan(vid, 'cred_delivery', <pseudo_id, ~kk, ~vp>)]
+rule Auth_Sec_Channel_Cred_Delivery: // Secure channel delivers credentials to vehicle
+  [ AuthSecChan(vid, 'cred_delivery', <pseudo_id, kk, vp>) ]
+  --[ DeliverSecureCred(vid, pseudo_id)
+    , CredDelivered(vid) ]->
+  [ ReceivedCred(vid, pseudo_id, kk, vp) ]
+rule Setup_Vehicle_Complete: // Complete setup after credentials delivered
+  [ VehicleState($rta, vid, 'processed')
+  , ReceivedCred(vid, pseudo_id, kk, vp) ]
+  --[ VehicleSetupComplete(vid)
+    , RegisterVehicle($rta, vid, vp)        // Include validity period
+    , ActivePPID(vid, pseudo_id, vp)        // Mark PPID as active with vp
+    , ValidAt(pseudo_id, 'init') ]->        // Mark initial validity point
+  [ !Vehicle($rta, vid, kk, vp)                     // Only vid is truly persistent
+  , VehicleActiveCred(vid, pseudo_id, kk, vp)  // Current active credentials
+  , !VehiclePseudonym(vid, pseudo_id, vp) ]    // Track PPID-VP binding
+rule Validity_Period_End: // Handle validity period expiration
+  [ VehicleActiveCred(vid, pseudo_id, kk, vp) ]
+  --[ ExpirePPID(vid, pseudo_id, vp)
+    , ValidAt(pseudo_id, 'expire') ]->
+    [ ] // Once expired, vehicle must register again like new vehicle
+
+// Vehicle-RSU Key Exchange
+rule VehicleSharesProduction_Init:
+    [ !Vehicle($rta, vid, kk, vp)    // Using consistent naming
+    , !RSU($rta, rsuid, rsk)     // Using consistent naming
+    , Fr(~s_v)
+    , Fr(~nonce) ]
+    --[ KeyExchangeInit(vid, rsuid)
+      , SessionStart(~nonce) ]->
+    [ StoreVehicleKE(vid, rsuid, ~s_v, ~nonce)
+    , Out(<vid, session_key(~s_v, pk(rsk)), ~nonce>) ]
+
+rule VehicleSharesProduction_Response:
+    [ StoreVehicleKE(vid, rsuid, s_v, nonce)  // Changed from $vid, $rid
+    , !RSU($rta, rsuid, rsk)                  // Consistent with previous rules
+    , Fr(~s_r)
+    , In(<vid, k_v, nonce>) ]
+    --[ KeyExchangeResponse(vid, rsuid) ]->
+    [ StoreSessionKey(vid, rsuid, session_key(s_v, k_v))
+    , Out(<rsuid, session_key(~s_r, pk(s_v))>) ]
+
+// Ring Signature Generation
+rule SignatureGeneration:
+   [ !Vehicle($rta, vid, kk, vp)
+   , !VehiclePseudonym(vid, pseudo_id, vp)
+   , StoreSessionKey(vid, rsuid, sk)
+   , Fr(~msg)
+   , Fr(~ring_rand) ]
+   --[ GenerateSignature(vid, ~msg)
+     , ValidRing(ring(pseudo_id, ~ring_rand))
+     , UseVehicle($rta, vid, 'exists')      // Make sure this matches exactly
+     , SignatureEvent(vid, ~msg, $rta) ]->  // Add linking event
+   [ !SignedMessage(vid, ~msg, ring(pseudo_id, ~ring_rand))
+   , Out(<pseudo_id, ~msg, ring(pseudo_id, ~ring_rand), timestamp>) ]
+
+rule MessageVerification:
+   [ In(<ppid, msg, ring, ts>)
+   , !RSU($rta, rsuid, rsk) ]               // Changed from $rid, rid
+   --[ VerifyAttempt(ppid, msg)
+     , ValidTimestamp(ts)
+     , Once(ts) ]->
+   [ VerifiedMessage(ppid, msg) ]
+
+    
+
+/* Core Protocol Rules */
+// To be added:
+// - Pseudonym updates
+
+/* Restrictions */
+restriction Timestamp_Order:
+  "∀ t1 t2 #i #j.
+  ValidTimestamp(t1)@i & ValidTimestamp(t2)@j & i < j
+  ==> not(t1 = t2)"
+
+restriction Unique_Timestamp:
+  "∀ t #i #j. 
+  Once(t)@i & Once(t)@j 
+  ==> #i = #j"
+
+restriction PPID_Privacy:
+  "∀ vid pseudo_id kk vp x #i #j.
+    PPIDGenerated(vid, pseudo_id)@i &
+    PPIDCredentials(pseudo_id, kk, vp)@i &
+    KU(x)@j &
+    (i < j) &
+    (x = vid | x = kk)  
+    ==> F"
+
+restriction Setup_State_Order:
+  "All vid #i #j #k #l.
+    InitRequest(vid)@i &
+    VIDDelivered(vid)@j &
+    CredDelivered(vid)@k &
+    VehicleSetupComplete(vid)@l
+    ==> #i < #j & #j < #k & #k < #l"
+
+restriction Auth_Sec_VID_Privacy:
+  "All vid rta #i #j.
+    DeliverSecureVID(vid, rta)@i & K(vid)@j ==> F"
+restriction Auth_Sec_Cred_Privacy:
+  "All vid pseudo_id #i #j.
+    DeliverSecureCred(vid, pseudo_id)@i & K(pseudo_id)@j ==> F"
+restriction Validity_Period_Order:
+  "All pseudo_id #i #j.
+      ValidAt(pseudo_id, 'init')@i &
+      ValidAt(pseudo_id, 'expire')@j
+  ==> #i < #j"
+restriction State_Progress:
+  "All rta vid #i.
+    VehicleState(rta, vid, 'init')@i
+    ==> (Ex #j.
+      VehicleState(rta, vid, 'processed')@j &
+      #i < #j)"
+
+// First helper lemma - simpler version focusing on persistence
+lemma vehicle_state_persistence:
+  all-traces
+  "∀ vid #i.
+    VehicleSetupInit(vid)@#i 
+    ==> (Ex rta vp #j.
+      VehicleSetupComplete(vid)@#j &
+      RegisterVehicle(rta, vid, vp)@#j &
+      #i < #j)"
+lemma vehicle_ppid_link:
+  all-traces
+  "∀ vid pseudo_id kk vp #i.
+    PPIDGenerated(vid, pseudo_id)@i &
+    PPIDCredentials(pseudo_id, kk, vp)@i
+    ==> (Ex #j.
+      VehicleSetupRTA(vid)@j &
+      ActivePPID(vid, pseudo_id, vp)@j &
+      #j = #i)"  // Complete comes after
+// Second helper lemma - track signature generation
+lemma signature_vehicle_link:
+  all-traces
+  "∀ vid msg #i.
+    GenerateSignature(vid, msg)@i
+    ==> (Ex rta vp pseudo_id.
+      (ActivePPID(vid, pseudo_id, vp)@i &
+        SignatureEvent(vid, msg, rta)@i))"
+
+// Main protocol flow
+lemma protocol_flow:
+  all-traces
+  "∀ vid msg #i.
+    GenerateSignature(vid, msg)@i
+    ==> (Ex kk vp pseudo_id #j #k.
+      PPIDGenerated(vid, pseudo_id)@j &
+      PPIDCredentials(pseudo_id, kk, vp)@j &
+      VehicleSetupComplete(vid)@k &
+      ActivePPID(vid, pseudo_id, vp)@k &
+      #j < #k & #k < #i)"
+
+lemma ppid_must_expire:
+  "All vid pseudo_id vp #i.
+      ActivePPID(vid, pseudo_id, vp)@i
+  ==> Ex #j.
+      ExpirePPID(vid, pseudo_id, vp)@j &
+      #i < #j"
+
+lemma ppid_validity_period:
+  "All vid pseudo_id vp #i #j.
+      ActivePPID(vid, pseudo_id, vp)@i &
+      ValidAt(pseudo_id, 'expire')@j
+  ==> Ex #k.
+      ValidAt(pseudo_id, 'init')@k &
+      #k < #i &
+      #i < #j"
+
+/* Security Properties */
+// To be added:
+// 1. Message Authentication
+// 2. Identity Privacy
+// 3. Unlinkability 
+// 4. Conditional Privacy
+// 5. Replay Attack Resistance
+// 6. Message Integrity
+
+
+end
