@@ -66,5 +66,6 @@ tamarin-prover --prove lbrcppa.spthy --derivcheck-timeout=120 -c=30
 
 For questions or collaboration:
 
-Tao-hsiang Chang
+**Tao-hsiang Chang**
+
 e-mail: tchang@cs.nccu.edu.tw
