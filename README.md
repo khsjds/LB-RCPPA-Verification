@@ -54,7 +54,11 @@ The models verify several key security properties relevant to VANET environments
 tamarin-prover --prove lbrcppa.spthy --derivcheck-timeout=120 -c=30
 ```
 
-- Since the Memeber List life cycle is complex and different kinds of looping occurs, we prove lemma ml_consistency separately -- that is, we comment out lemma ml_consistency and restriction max_recordml (ln:853-879) to run all other lemmas, and comment out all other lemmas (ln:778-851) to run lemma ml_consistency along with restriction max_recordml. 
+- Due to the complex Member List life cycle, the lemma ml_consistency is proven separately:
+  1. **Prove all lemmas except ml_consistency**:
+   Comment out lemma ml_consistency and restriction max_recordml (lines 853-879)
+  2. **Prove ml_consistency**:
+   Comment out all other lemmas (lines 778-851), enable ml_consistency and restriction max_recordml
 
 ---
 
