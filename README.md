@@ -1,54 +1,55 @@
-# LB-RCPPA Formal Verification
+# LB-RCPPA Formal Verification Repository
+This repository contains the Tamarin Prover models for formally verifying the security properties of the **Lattice-Based Ring Signature-Based Conditional Privacy Preserving Authentication (LB-RCPPA)** protocol.
 
-Formal verification of Lattice-Based Ring-based Conditional Privacy-Preserving Authentication protocol using EasyCrypt and Tamarin.
+LB-RCPPA is a lattice-based authentication and privacy-preserving framework designed for secure communications in Vehicular Ad Hoc Networks (VANETs). The formal models verify the security properties of LB-RCPPA under post-quantum assumptions.  
 
-## Structure
+The Tamarin models provided here serve as the formal verification framework supporting the theoretical security proofs presented in the LB-RCPPA research, using Tamarin Prover v1.10.0.
 
-```bash
-project/
-├── easycrypt/                      # EasyCrypt proofs and related files
-│   ├── problems/                   # Definitions of hard mathematical problems used in the protocol
-│   │   ├── SISProblem.ec
-│   │   ├── ISISProblem.ec
-│   │   └── BiGISISProblem.ec
-│   ├── primitives/                 # Implementations of cryptographic primitives based on the hard problems
-│   │   ├── Common.ec               # Common definitions and parameters used across primitives
-│   │   ├── TrapdoorFunctions.ec    # Definitions and implementations of lattice trapdoor functions
-│   │   ├── Ring.ec                 # Implementation of the lattice-based ring signature scheme
-│   │   ├── KeyExchange.ec          # Implementation of the Bi-GISIS key exchange protocol
-│   │   ├── HashFunctions.ec        # Definitions of cryptographic hash functions used in the protocol
-│   │   └── Utils.ec                # Utility functions and helper definitions used throughout the primitives
-│   ├── proofs/                     # Proofs of security properties for the cryptographic primitives
-│   │   ├── SecurityReductions.ec   # Common security reductions used in multiple proofs
-│   │   ├── ring/                   # Proofs related to the ring signature scheme
-│   │   │   ├── Unforgeability.ec   # Proof of unforgeability (EUF-CMA) for the ring signature
-│   │   │   ├── Anonymity.ec
-│   │   │   └── NonRepudiation.ec
-│   │   └── keyexchange/            # Proofs related to the key exchange protocol
-│   │       ├── KeySecurity.ec      # Proof of key security (indistinguishability) for the key exchange
-│   │       ├── KeyReusability.ec
-│   │       └── ForwardSecurity.ec
-│   └── lemmas/                     # Auxiliary lemmas and mathematical results used in the proofs
-│       ├── SISLemmas.ec
-│       ├── ISISLemmas.ec
-│       ├── BiGISISLemmas.ec
-│       ├── LatticeOps.ec
-│       ├── GaussianSampling.ec
-│       ├── HashFunctionLemmas.ec
-│       └── MathLemmas.ec
-└── tamarin/                        # Tamarin models and proofs
-│   ├── lib/
-│   │   ├── common.spthy       # Common functions, types, and reusable rules
-│   │   └── crypto.spthy       # Cryptographic primitives and assumptions
-│   ├── models/
-│   │   ├── setup.spthy        # System setup and registration
-│   │   ├── keyexchange.spthy  # Key exchange protocol rules
-│   │   ├── signature.spthy    # Ring signature rules
-│   │   ├── messages.spthy     # Message handling rules  
-│   │   └── updates.spthy      # Pseudonym/member list update rules
-│   ├── properties/
-│   │   ├── authentication.spthy  # Authentication properties
-│   │   ├── privacy.spthy        # Privacy and anonymity properties
-│   │   ├── freshness.spthy      # Message freshness properties
-│   │   └── states.spthy         # State transition properties
-└── README.md           # Documentation and instructions
+- Currently we're using the following command to start the proving process: 
+tamarin-prover --prove lbrcppa.spthy --derivcheck-timeout=120 -c=30
+
+- Since the Memeber List life cycle is complex and different kinds of looping occurs, we prove lemma ml_consistency separately -- that is, we comment out lemma ml_consistency and restriction max_recordml (ln:853-879) to run all other lemmas, and comment out all other lemmas (ln:778-851) to run lemma ml_consistency along with restriction max_recordml. 
+
+---
+
+# Repository Structure
+LB-RCPPA-VERIFICATION/
+├── old/                   # Archived or earlier versions of Tamarin models and testing files
+├── lbrcppa.spthy          # Current finalized Tamarin model for LB-RCPPA
+└── README.md              # This file
+
+Directory "old" contains all used examples/past versions of models. There'll always be a copy of current lbrcppa.spthy in the old folder (currently lbrcppa05.spthy)
+
+---
+
+# Model Description
+The formal Tamarin models reflect the six protocol phases designed in LB-RCPPA:
+
+1. **System Setup**  
+   Generation of system parameters, RSU key deployment, and initialization of vehicle TPDs.
+2. **Vehicle Shares Production**  
+   Credential shares generation through interactive key exchange protocols.
+3. **Signature Generation**  
+   Construction of lattice-based ring signatures for secure message authentication.
+4. **Message Verification**  
+   Signature verification by RSUs or other vehicles upon message reception.
+5. **Reauthentication**  
+   Lightweight session reauthentication for continuous communication.
+6. **Member List Update**  
+   Secure credential update and pseudonym regeneration procedures.
+
+The Tamarin models specify the protocol logic, message flows, and adversary interactions across these six phases.
+
+---
+
+## Verified Security Properties
+
+The models verify several key security properties relevant to VANET environments, including:
+
+- **Mutual Authentication**  
+- **Session Key Freshness and Agreement**  
+- **Anonymity and Message Unlinkability**  
+- **Authorized Identity Traceability**  
+- **Binding Preservation for Membership Resolution**  
+- **Forward Security for Credential Updates**  
+- **Resistance to Replay Attacks and Key Reuse**

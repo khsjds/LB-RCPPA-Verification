@@ -10,7 +10,7 @@ functions: pk/1
          , mul/2                     // For combining keys
          , add/2                     // For combining keys
          , sample_gaussian/1         // Gaussian sampling
-         , generate_partial_key/3    // Representing partial key generation using SampleMat
+         , generate_partial_key/1    // Representing partial key generation using SampleMat
          , MSB/1 [private]           // Most significant bits function
 
 equations: sdec(senc(m, k), k) = m
@@ -21,115 +21,120 @@ equations: sdec(senc(m, k), k) = m
  *       Phase 1: System Setup        *
  **************************************/
 
- // RTA Setup
+ /* RTA Setup */
 rule Setup_RTA:
     let
         mpk_sig = pk(~msk_sig)
         mpk_ke = pk(~msk_ke)
     in
-    [ Fr(~msk_sig)
-    , Fr(~msk_ke) ]
---> [ !RTA_Keys($RTA, ~msk_sig, ~msk_ke)
-    , !RTA_PubParams($RTA, mpk_sig, mpk_ke) ]
+    [ Fr(~msk_sig)    // Master signing key T
+    , Fr(~msk_ke) ]    // Master key exchange key
+--[ SetupRTA($RTA) ]->
+    [ !RTA_Keys($RTA, ~msk_sig, ~msk_ke)
+    , !RTA_PubParams($RTA, mpk_sig, mpk_ke) ]     // Store A, B for distribution and other params of $RTA
 
-// RSU Setup
+// force unique RTA setup per RTA
+restriction unique_rta_setup:
+    "All rta #i #j. SetupRTA(rta) @ i & SetupRTA(rta) @ j 
+        ==> #i = #j"
+
+/* RSU Setup */
 rule Setup_RSU:
     let
-        pk_rsu = pk(~sk_rsu)
+        sk_rsu = sample_gaussian(~rand)     // Sample RSU secret key
+        e_rsu = sample_gaussian(~rand2)     // Error term
+        pk_rsu = add(mul(mpk_ke, sk_rsu), e_rsu) // RSU public key
     in
-    [ Fr(~sk_rsu)
+    [ Fr(~rand), Fr(~rand2)
     , !RTA_PubParams($RTA, mpk_sig, mpk_ke) ]
---> [ !RSU_Keys($RSU, ~sk_rsu)
+--[ SetupRSU($RTA, $RSU, pk_rsu) ]->
+    [ !RSU_Keys($RSU, sk_rsu, pk_rsu)     // Store RSU keys
     , !RSU_PubKey($RSU, $RTA, pk_rsu) ]
 
-// A Vehicle exists
-rule Setup_Vehicle_New:
-    [ Fr(~vid) ]
---> [ !Vehicle(~vid) ]
-
-// Vehicle Initial Registration - Step 1: Secure ID transmission
+/* Vehicle Initial Registration - Step 1: Secure ID transmission */
 rule Vehicle_Init_Register:
-    [ Fr(~req_id)
-    , !Vehicle(vid)
-    , !RSU_PubKey($RSU, $RTA, pk_rsu)
-    , !RTA_PubParams($RTA, mpk_sig, mpk_ke) ]
---[ VehicleInit(~req_id, $RTA, $RSU, vid) ]->      // Record action that with ~reqid, $RSU transfer vid's request to $RTA
-    [ Secure(vid, $RTA, 'authentication', ~req_id) // Send ID securely to RTA
-    , Vehicle_Wait(vid, ~req_id) ]
+    [ Fr(~vid)          // Vehicle's real identity
+    , Fr(~req_id)
+    , !RTA_PubParams($RTA, mpk_sig, mpk_ke) ]// require a RTA to initialize
+--[ VehicleInit(~vid) ]->
+    [ Secure(~vid, $RTA, 'vehicle_id', <~vid, ~req_id>)        // Send ID securely to RTA
+    , Vehicle_Wait(~vid) ]        // Store state for next step
 
-// RTA processes registration - Step 2: Generate pseudo-identity and auth key
+/* RTA processes registration - Step 2: Generate pseudo-identity and auth key */
 rule RTA_Process_Registration:
     let
-        ppid = h(<~kk, vid, ~vp>)
+        ppid = h(<~kk, vid, ~vp>)  // Public pseudo-identity
     in
-    [ Secure(vid, $RTA, 'authentication', req_id)        // Receive vehicle ID
-    , Fr(~kk), Fr(~vp)
+    [ Secure(vid, $RTA, 'vehicle_id', <vid, req_id>)           // Receive vehicle ID
+    , Fr(~kk), Fr(~vp)                      // Create auth key & validity period
     , !RTA_Keys($RTA, msk_sig, msk_ke)
     , !RTA_PubParams($RTA, mpk_sig, mpk_ke) ]
 --[ RegisterVehicle($RTA, vid, ppid, ~vp, ~kk, req_id)
-  , RecordML($RTA, vid, ppid, ~vp, ~kk) ]->
-    [ !ML($RTA, vid, ppid, ~vp, ~kk)                     // Add to Member List
-    , Secure($RTA, vid, 'auth_credentials', <ppid, ~kk>) // Send credentials securely
-    , RTA_Wait_PK($RTA, vid, ppid, req_id) ]
+  , RecordML($RTA, vid, ppid, ~vp, ~kk)]->//[no_precomp] ]->
+    [ !ML($RTA, vid, ppid, ~vp, ~kk)    // Add to Member List
+    , Secure($RTA, vid, 'credentials', <ppid, ~kk, mpk_sig, mpk_ke>)  // Send credentials and public params securely
+    , RTA_Wait_PK($RTA, vid, ppid) ]      // Wait for vehicle's public key
 
-// Vehicle Setup - Step 3a: Setup for Signature Key
+/* Vehicle Setup - Step 3a: Setup for Signature Key*/
 rule Vehicle_Setup_Signature_Key:
     let
-        pv1 = mul(mpk_sig, ~cv)
+        cv = ~rand     // Random choice bounded by d
+        pv1 = mul(mpk_sig, cv)          // Public key for signature
     in
-    [ Vehicle_Wait(vid, req_id)
-    , Secure($RTA, vid, 'auth_credentials', <ppid, kk>)  // Received from RTA with public params
-    , !RTA_PubParams($RTA, mpk_sig, mpk_ke)
-    , Fr(~cv) ]
---[ SetupSignatureKey($RTA, ppid, req_id) ]->
-    [ Vehicle_Sig_Partial(vid, ppid, kk, ~cv, pv1, mpk_sig, mpk_ke, req_id)  // Store partial state with params
-    , Secure(vid, $RTA, 'auth_veh_pubkey', <ppid, pv1>) ]
+    [ Vehicle_Wait(vid)
+    , Secure($RTA, vid, 'credentials', <ppid, kk, mpk_sig, mpk_ke>)  // Received from RTA with public params
+    , Fr(~rand) ]                         // For bounded random choice
+--[ SetupSignatureKey(vid, ppid) ]->
+    [ Vehicle_Sig_Partial(vid, ppid, kk, cv, pv1, mpk_sig, mpk_ke)  // Store partial state with params
+    , Secure(vid, $RTA, 'pubkey', <ppid, pv1>) ]          // Send public key to RTA
 
-// RTA Setup - Step 3b: Generate partial private key
+/* RTA Setup - Step 3b: Generate partial private key */
 rule RTA_Generate_Partial_Key:
     let
-        fv = h(<ppid, pv1>)
-        dv = generate_partial_key(mpk_sig, msk_sig, fv)     // Partial private key
+        fv = h(<ppid, pv1>)              // H1(PPID, Pv1)
+        dv = generate_partial_key(fv)     // Partial private key
     in
-    [ Secure(vid, $RTA, 'auth_veh_pubkey', <ppid, pv1>)
-    , RTA_Wait_PK($RTA, vid, ppid, req_id)
-    , !RTA_PubParams($RTA, mpk_sig, mpk_ke)
+    [ Secure(vid, $RTA, 'pubkey', <ppid, pv1>)
+    , RTA_Wait_PK($RTA, vid, ppid)
     , !RTA_Keys($RTA, msk_sig, msk_ke) ]
---[ GeneratePartialKey($RTA, ppid, req_id) ]->
+--[ GeneratePartialKey(ppid) ]->
     [ Secure($RTA, vid, 'partial_key', dv) ]          // Send partial key securely
 
-// Vehicle Setup - Step 3c: Setup for Key Exchange and Complete Setup
+/* Vehicle Setup - Step 3c: Setup for Key Exchange and Complete Setup */
 rule Vehicle_Setup_Complete:
     let
-        pv2 = pk(~sv2)     // Key Exchange keys
-        sv1 = add(cv, dv)  // Complete signature private key
+        // Key Exchange keys
+        sv2 = sample_gaussian(~rand2)    // Private key for KE
+        ev = sample_gaussian(~rand3)     // Error term
+        pv2 = add(mul(mpk_ke, sv2), ev)     // Public key for KE
+        // Complete signature private key
+        sv1 = add(cv, dv)               // Private key = Cv + Dv
     in
-    [ Vehicle_Sig_Partial(vid, ppid, kk, cv, pv1, mpk_sig, mpk_ke, req_id)
+    [ Vehicle_Sig_Partial(vid, ppid, kk, cv, pv1, mpk_sig, mpk_ke)
     , Secure($RTA, vid, 'partial_key', dv)            // Partial key from RTA
-    , Fr(~sv2) ]
---[ SetupComplete($RTA, vid, ppid, req_id) ]->
+    , Fr(~rand2)               // For Gaussian sampling
+    , Fr(~rand3) ]              // For error term
+--[ SetupComplete($RTA, vid, ppid)
+  , HasSignatureKeys(ppid, sv1, pv1, dv)
+  , HasKEKeys(ppid, sv2, pv2)
+  , HasAuthKey(ppid, kk) ]->
     [ !V_Auth_Key(vid, ppid, kk)                    // Authentication credentials
     , !V_Sig_Keys(vid, ppid, sv1, pv1, dv)             // Signature keys
-    , !V_KE_Keys(vid, ppid, ~sv2, pv2) ]             // Key Exchange keys
+    , !V_KE_Keys(vid, ppid, sv2, pv2) ]             // Key Exchange keys
 
 /* Expiration rule (might happen at some time)*/
 rule Expire_ML:
     [ !ML($RTA, vid, ppid, vp, kk) ]
---[ PPIDExpired($RTA, ppid, vp, kk) ]->
+--[ PPIDExpired($RTA, ppid, vp, kk) 
+  , ExpireML($RTA, ppid, vp, kk)]->
     [ !ExpiredML($RTA, vid, ppid, vp, kk) ]
 
 // ensure unique expiration
 restriction ppidexpired_when_valid:
     "All rta ppid vp kk #i.
         PPIDExpired(rta, ppid, vp, kk) @ i
-    ==> ((Ex vid req_id #j. RegisterVehicle(rta, vid, ppid, vp, kk, req_id) @ j & j < i) |
-        (Ex vid req_id #j. TransferVehicle(rta, vid, ppid, vp, kk, req_id) @ j & j < i) |
-        (Ex vid req_id #j. ReregisterVehicle(rta, vid, ppid, vp, kk, req_id) @ j & j < i) |
-        (Ex vid #j. MLAdd(rta, vid, ppid, vp, kk) @ j & j < i)) &
-       (not(Ex #k. PPIDExpired(rta, ppid, vp, kk) @ k & k < i) |
-        not(Ex #k. ReauthPPIDExpired(rta, ppid, vp, kk) @ k & k < i) |
-        not(Ex #k. MLExpire(rta, ppid, vp, kk) @ k & k < i) |
-        not(Ex #k. PPIDTransferExpired(rta, ppid, vp, kk) @ k & k < i))"
+    ==> (Ex vid #j. RecordML(rta, vid, ppid, vp, kk) @ j & j < i) &
+        not(Ex #k. ExpireML(rta, ppid, vp, kk) @ k & k < i)"
 
 // possible vp expiration only after vehicle setup
 restriction vp_expiration_setup: // normal path
@@ -172,14 +177,8 @@ rule Vehicle_Share_Init:
 restriction share_init_valid_ppid:
     "All rta ppid rsu_id #i.
         ShareInit(rta, ppid, rsu_id) @ i
-    ==> ((Ex vid vp kk req_id #j. RegisterVehicle(rta, vid, ppid, vp, kk, req_id) @ j & j < i) |
-         (Ex vid vp kk req_id #j. TransferVehicle(rta, vid, ppid, vp, kk, req_id) @ j & j < i) |
-         (Ex vid vp kk req_id #j. ReregisterVehicle(rta, vid, ppid, vp, kk, req_id) @ j & j < i) |
-         (Ex vid vp kk #j. MLAdd(rta, vid, ppid, vp, kk) @ j & j < i)) &
-        (not(Ex vp kk #k. PPIDExpired(rta, ppid, vp, kk) @ k & k < i) |
-         not(Ex vp kk #k. ReauthPPIDExpired(rta, ppid, vp, kk) @ k & k < i) |
-         not(Ex vp kk #k. MLExpire(rta, ppid, vp, kk) @ k & k < i) |
-         not(Ex vp kk #k. PPIDTransferExpired(rta, ppid, vp, kk) @ k & k < i))"
+    ==> (Ex vid vp kk #j. RecordML(rta, vid, ppid, vp, kk) @ j & j < i) &
+        not(Ex vp kk #k. ExpireML(rta, ppid, vp, kk) @ k & k < i)"
 
 /* RSU Response - Step 2: RSU sends its public key */
 rule RSU_Share_Response:
@@ -188,7 +187,7 @@ rule RSU_Share_Response:
         d = h(<ppid, $RSU, pv2, pk_rsu>) // H6(PPIDv, IDr, Pv2, PTr)
     in
     [ In(<ppid, pv2>)
-    , !RSU_Keys($RSU, sk_rsu)
+    , !RSU_Keys($RSU, sk_rsu, pk_rsu)
     , !RSU_PubKey($RSU, $RTA, pk_rsu)
     , !ML($RTA, vid, ppid, vp, kk) ]
 --[ RSUResponse(ppid, $RSU) ]->
@@ -350,14 +349,8 @@ rule Generate_Message:
 restriction ring_init_valid_signer:
     "All rta ppid #i.
         RingInit(rta, ppid) @ i
-    ==> ((Ex vid vp kk req_id #j. RegisterVehicle(rta, vid, ppid, vp, kk, req_id) @ j & j < i) |
-         (Ex vid vp kk req_id #j. TransferVehicle(rta, vid, ppid, vp, kk, req_id) @ j & j < i) |
-         (Ex vid vp kk req_id #j. ReregisterVehicle(rta, vid, ppid, vp, kk, req_id) @ j & j < i) |
-         (Ex vid vp kk #j. MLAdd(rta, vid, ppid, vp, kk) @ j & j < i)) &
-        (not(Ex vp kk #k. PPIDExpired(rta, ppid, vp, kk) @ k & k < i) |
-         not(Ex vp kk #k. ReauthPPIDExpired(rta, ppid, vp, kk) @ k & k < i) |
-         not(Ex vp kk #k. MLExpire(rta, ppid, vp, kk) @ k & k < i) |
-         not(Ex vp kk #k. PPIDTransferExpired(rta, ppid, vp, kk) @ k & k < i))"
+    ==> (Ex vid vp kk #j. RecordML(rta, vid, ppid, vp, kk) @ j & j < i) &
+        not(Ex vp kk #k. ExpireML(rta, ppid, vp, kk) @ k & k < i)"
 
 // Ring member uniqueness
 restriction ring_members_distinct:
@@ -461,14 +454,8 @@ restriction different_rtas_reauth:
 restriction reauth_request_when_valid:
     "All vid ppid rta_old rta_new req_id #i.
         ReauthRequest(vid, ppid, rta_old, rta_new, req_id) @ i
-    ==> ((Ex vp kk req_id_old #j. RegisterVehicle(rta_old, vid, ppid, vp, kk, req_id_old) @ j & j < i) |
-         (Ex vp kk req_id_old #j. TransferVehicle(rta_old, vid, ppid, vp, kk, req_id_old) @ j & j < i) |
-         (Ex vp kk req_id_old #j. ReregisterVehicle(rta_old, vid, ppid, vp, kk, req_id_old) @ j & j < i) |
-         (Ex vp kk #j. MLAdd(rta_old, vid, ppid, vp, kk) @ j & j < i)) &
-       (not(Ex vp kk #k. PPIDExpired(rta_old, ppid, vp, kk) @ k & k < i) |
-        not(Ex vp kk #k. ReauthPPIDExpired(rta_old, ppid, vp, kk) @ k & k < i) |
-        not(Ex vp kk #k. MLExpire(rta_old, ppid, vp, kk) @ k & k < i) |
-        not(Ex vp kk #k. PPIDTransferExpired(rta_old, ppid, vp, kk) @ k & k < i))"
+    ==> (Ex vp kk #j. RecordML(rta_old, vid, ppid, vp, kk) @ j & j < i) &
+        not(Ex vp kk #k. ExpireML(rta_old, ppid, vp, kk) @ k & k < i)"
 
 // RTA forwards request as linear fact
 rule RTA_Forward_Request:
@@ -494,7 +481,8 @@ rule RTA_Process_Found:
   , TransferML($RTA_check, $RTA_new, vid, req_id)
   , TransferVehicle($RTA_new, vid, ppid, vp, kk, req_id)
   , PPIDTransferExpired($RTA_check, ppid, vp, kk)
-  , RecordML($RTA_new, vid, ppid, vp, kk) ]->
+  , ExpireML($RTA_check, ppid, vp, kk)
+  , RecordML($RTA_new, vid, ppid, vp, kk)]->//[no_precomp] ]->
     [ !ML($RTA_new, vid, ppid, vp, kk)
     , !ExpiredML($RTA_check, vid, ppid, vp, kk)
     , Secure($RTA_new, vid, 'reauth_success', req_id) ]
@@ -540,7 +528,7 @@ rule RTA_Process_NotFound:
     , !RTA_Keys($RTA_new, msk_sig, msk_ke)
     , !RTA_PubParams($RTA_new, mpk_sig, mpk_ke) ]
 --[ ReregisterVehicle($RTA_new, vid, ppid, ~vp, ~kk, req_id)
-  , RecordML($RTA_new, vid, ppid, ~vp, ~kk) ]->
+  , RecordML($RTA_new, vid, ppid, ~vp, ~kk)]->//[no_precomp] ]->
     [ !ML($RTA_new, vid, ppid, ~vp, ~kk) // Add to Member List
     , Secure($RTA_new, vid, 'reauth_failure', <ppid, ~kk, mpk_sig, mpk_ke>)
     , RTA_Reauth_Wait_PK($RTA_new, vid, ppid, req_id) ] // this connect to the later vehicle setup on RTA part
@@ -563,11 +551,10 @@ rule Vehicle_Reauth_Setup_Signature:
 rule RTA_Reauth_Generate_Partial_Key:
     let
         fv = h(<ppid, pv1>)              
-        dv = generate_partial_key(mpk_sig, msk_sig, fv)     
+        dv = generate_partial_key(fv)     
     in
     [ Secure(vid, $RTA_new, 'reauth_pubkey', <ppid, pv1, req_id>)
     , RTA_Reauth_Wait_PK($RTA_new, vid, ppid, req_id)
-    , !RTA_PubParams($RTA_new, mpk_sig, mpk_ke)
     , !RTA_Keys($RTA_new, msk_sig, msk_ke)
     , !ML($RTA_new, vid, ppid, vp, kk) ]
 --[ ReauthGeneratePartialKey(ppid, req_id) ]->
@@ -613,67 +600,32 @@ rule Expire_Untransferred_ML:
     [ !ML($RTA_new, vid, ppid_new, vp_new, kk_new)
     , !ML($RTA_old, vid, ppid_old, vp_old, kk_old) ]
 --[ DuplicateML(vid, $RTA_new, ppid_new, $RTA_old, ppid_old)
-  , ReauthPPIDExpired($RTA_old, ppid_old, vp_old, kk_old) ]->
+  , ReauthPPIDExpired($RTA_old, ppid_old, vp_old, kk_old)
+  , ExpireML($RTA_old, ppid_old, vp_old, kk_old) ]->
     [ !ExpiredML($RTA_old, vid, ppid_old, vp_old, kk_old) ]
 
 // duplicate ml is defined only for valid ml records
 restriction find_duplicate_ml:
     "All vid rta_new ppid_new rta_old ppid_old #i.
         DuplicateML(vid, rta_new, ppid_new, rta_old, ppid_old) @ i
-    ==> not(((Ex vp kk #k. PPIDExpired(rta_new, ppid_new, vp, kk) @ k & k < i) |
-             (Ex vp kk #k. ReauthPPIDExpired(rta_new, ppid_new, vp, kk) @ k & k < i) |
-             (Ex vp kk #k. MLExpire(rta_new, ppid_new, vp, kk) @ k & k < i) |
-             (Ex vp kk #k. PPIDTransferExpired(rta_new, ppid_new, vp, kk) @ k & k < i)) &
-            ((Ex vp kk #j. PPIDExpired(rta_old, ppid_old, vp, kk) @ j & j < i) |
-             (Ex vp kk #j. ReauthPPIDExpired(rta_old, ppid_old, vp, kk) @ j & j < i) |
-             (Ex vp kk #j. MLExpire(rta_old, ppid_old, vp, kk) @ j & j < i)) |
-             (Ex vp kk #j. PPIDTransferExpired(rta_old, ppid_old, vp, kk) @ j & j < i))"
+    ==> not(Ex vp kk #k. ExpireML(rta_new, ppid_new, vp, kk) @ k & k < i) &
+        not(Ex vp kk #j. ExpireML(rta_old, ppid_old, vp, kk) @ j & j < i)"
 
 // ensure the old ml record is getting expired
 restriction expire_older:
     "All vid rta_new ppid_new rta_old ppid_old #i.
         DuplicateML(vid, rta_new, ppid_new, rta_old, ppid_old) @ i &
-        ((Ex vp kk req_id #j. RegisterVehicle(rta_new, vid, ppid_new, vp, kk, req_id) @ j & j < i) |
-         (Ex vp kk req_id #j. TransferVehicle(rta_new, vid, ppid_new, vp, kk, req_id) @ j & j < i) |
-         (Ex vp kk req_id #j. ReregisterVehicle(rta_new, vid, ppid_new, vp, kk, req_id) @ j & j < i) |
-         (Ex vp kk #j. MLAdd(rta_new, vid, ppid_new, vp, kk) @ j & j < i)) &
-        ((Ex vp kk req_id #k. RegisterVehicle(rta_old, vid, ppid_old, vp, kk, req_id) @ k & k < i) |
-         (Ex vp kk req_id #k. TransferVehicle(rta_old, vid, ppid_old, vp, kk, req_id) @ k & k < i) |
-         (Ex vp kk req_id #k. ReregisterVehicle(rta_old, vid, ppid_old, vp, kk, req_id) @ k & k < i) |
-         (Ex vp kk #k. MLAdd(rta_old, vid, ppid_old, vp, kk) @ k & k < i))
-    ==> Ex vp kk. ReauthPPIDExpired(rta_old, ppid_old, vp, kk) @ i"
+        (Ex vp_old kk_old #j. ExpireML(rta_old, ppid_old, vp_old, kk_old) @ j & j < i) &
+        (Ex vp_new kk_new #k. ExpireML(rta_new, ppid_new, vp_new, kk_new) @ k & k < i)
+    ==> Ex vp_old kk_old. ReauthPPIDExpired(rta_old, ppid_old, vp_old, kk_old) @ i"
 
 restriction valid_ml_transfer:
     "All rta_check rta_new vid req_id #i.
         TransferML(rta_check, rta_new, vid, req_id) @ i
-    ==> not(Ex rta_other vp_other ppid_other kk_other req_id #j.
-            (not(rta_other = rta_check) & not(rta_other = rta_new) &
-             RegisterVehicle(rta_other, vid, ppid_other, vp_other, kk_other, req_id) @ j & j < i &
-             not(Ex #k. PPIDExpired(rta_other, ppid_other, vp_other, kk_other) @ k & k < i) &
-             not(Ex #l. ReauthPPIDExpired(rta_other, ppid_other, vp_other, kk_other) @ l & l < i) &
-             not(Ex #m. MLExpire(rta_other, ppid_other, vp_other, kk_other) @ m & m < i) &
-             not(Ex #n. PPIDTransferExpired(rta_other, ppid_other, vp_other, kk_other) @ n & n < i))) |
-        not(Ex rta_other vp_other ppid_other kk_other req_id2 #j.
-            (not(rta_other = rta_check) & not(rta_other = rta_new) &
-             TransferVehicle(rta_other, vid, ppid_other, vp_other, kk_other, req_id2) @ j & j < i &
-             not(Ex #k. PPIDExpired(rta_other, ppid_other, vp_other, kk_other) @ k & k < i) &
-             not(Ex #l. ReauthPPIDExpired(rta_other, ppid_other, vp_other, kk_other) @ l & l < i) &
-             not(Ex #m. MLExpire(rta_other, ppid_other, vp_other, kk_other) @ m & m < i) &
-             not(Ex #n. PPIDTransferExpired(rta_other, ppid_other, vp_other, kk_other) @ n & n < i))) |
-        not(Ex rta_other vp_other ppid_other kk_other req_id2 #j.
-            (not(rta_other = rta_check) & not(rta_other = rta_new) &
-             ReregisterVehicle(rta_other, vid, ppid_other, vp_other, kk_other, req_id2) @ j & j < i &
-             not(Ex #k. PPIDExpired(rta_other, ppid_other, vp_other, kk_other) @ k & k < i) &
-             not(Ex #l. ReauthPPIDExpired(rta_other, ppid_other, vp_other, kk_other) @ l & l < i) &
-             not(Ex #m. MLExpire(rta_other, ppid_other, vp_other, kk_other) @ m & m < i) &
-             not(Ex #n. PPIDTransferExpired(rta_other, ppid_other, vp_other, kk_other) @ n & n < i))) |
-        not(Ex rta_other vp_other ppid_other kk_other #j.
-            (not(rta_other = rta_check) & not(rta_other = rta_new) &
-             MLAdd(rta_other, vid, ppid_other, vp_other, kk_other) @ j & j < i &
-             not(Ex #k. PPIDExpired(rta_other, ppid_other, vp_other, kk_other) @ k & k < i) &
-             not(Ex #l. ReauthPPIDExpired(rta_other, ppid_other, vp_other, kk_other) @ l & l < i) &
-             not(Ex #m. MLExpire(rta_other, ppid_other, vp_other, kk_other) @ m & m < i) &
-             not(Ex #n. PPIDTransferExpired(rta_other, ppid_other, vp_other, kk_other) @ n & n < i)))"
+    ==> not(Ex rta_other vp_other ppid_other kk_other #j. 
+            not(rta_other = rta_check) & not(rta_other = rta_new) &
+            RecordML(rta_other, vid, ppid_other, vp_other, kk_other) @ j & j < i &
+            not(Ex #k. ExpireML(rta_other, ppid_other, vp_other, kk_other) @ k & k < i))"
 
 /**************************************
  *     Phase 6: Member List Update    *
@@ -701,14 +653,8 @@ restriction unique_update:
 restriction update_init_when_valid:
     "All ppid rta #i.
         UpdateInit(ppid, rta) @ i
-    ==> ((Ex vid vp kk req_id #j. RegisterVehicle(rta, vid, ppid, vp, kk, req_id) @ j & j < i) |
-         (Ex vid vp kk req_id #j. TransferVehicle(rta, vid, ppid, vp, kk, req_id) @ j & j < i) |
-         (Ex vid vp kk req_id #j. ReregisterVehicle(rta, vid, ppid, vp, kk, req_id) @ j & j < i) |
-         (Ex vid vp kk #j. MLAdd(rta, vid, ppid, vp, kk) @ j & j < i)) &
-       (not(Ex vp kk #k. PPIDExpired(rta, ppid, vp, kk) @ k & k < i) |
-        not(Ex vp kk #k. ReauthPPIDExpired(rta, ppid, vp, kk) @ k & k < i) |
-        not(Ex vp kk #k. MLExpire(rta, ppid, vp, kk) @ k & k < i) |
-        not(Ex vp kk #k. PPIDTransferExpired(rta, ppid, vp, kk) @ k & k < i))"
+    ==> (Ex vid vp kk #j. RecordML(rta, vid, ppid, vp, kk) @ j & j < i) &
+        not(Ex vp kk #k. ExpireML(rta, ppid, vp, kk) @ k & k < i)"
         
 rule RTA_Update_Response:
     let
@@ -784,8 +730,9 @@ rule RTA_Generate_New_Credentials:
   , ExpireTS(ts)
   , CreateTS(~ts_new)
   , MLAdd($RTA, vid, ppid_new, ~vp_new, ~kk_new)
-  , MLExpire($RTA, ppid, vp, kk_old)
-  , RecordML($RTA, vid, ppid_new, ~vp_new, ~kk_new) ]->
+  , MLUpdatedExpire($RTA, ppid, vp, kk_old)
+  , ExpireML($RTA, ppid, vp, kk_old)
+  , RecordML($RTA, vid, ppid_new, ~vp_new, ~kk_new)]->//[no_precomp] ]->
     [ !ML($RTA, vid, ppid_new, ~vp_new, ~kk_new)
     , !ExpiredML($RTA, vid, ppid, vp, kk_old)
     , !ValidTS(~ts_new)
@@ -829,14 +776,14 @@ rule Compromise_Session_Key:
 
 /*
 // Session Validity Verification
-lemma session_validity_send:
+lemma sess_valid_send:
     "All rsu_id msg ring_pairs sig ppid ts #i.
         MessageCreated(rsu_id, <msg, ring_pairs, sig, ppid, ts>) @ i
     ==> Ex ki dp #j.
         CreateSession(ppid, rsu_id, ki, dp) @ j &
         j < i &
         not(Ex #k. ExpireSession(ppid, rsu_id, ki, dp) @ k & k < i)"
-lemma session_validity_recv:
+lemma sess_valid_recv:
     "All ppid rsu_id msg_package #i.
         ReceiveMessage(ppid, rsu_id, msg_package) @ i
     ==> Ex ki dp #j.
@@ -845,14 +792,14 @@ lemma session_validity_recv:
         not(Ex #k. ExpireSession(ppid, rsu_id, ki, dp) @ k & k < i)"
 
 // Timestamp Validity & Expiry
-lemma timestamp_validity:
+lemma ts_valid:
     "All ppid_r ppid msg sig ts #i.
         VerifyTimestamp(ppid_r, ppid, msg, sig, ts) @ i
     ==> Ex #j. CreateTS(ts) @ j & j < i &
         not(Ex #k. ExpireTS(ts) @ k & k < i)"
 
 // Pseudonym System Security
-lemma pseudonym_unlinkability:
+lemma ppid_unlink:
     "All ppid1 ppid2 vid1 vid2 #i #j. 
         RevealPseudonym(ppid1, vid1) @ i & 
         RevealPseudonym(ppid2, vid2) @ j &
@@ -862,7 +809,7 @@ lemma pseudonym_unlinkability:
             RTAAction(rta2) @ j"
 
 // Session Independence
-lemma session_independence:
+lemma sess_indep:
     "All ppid1 ppid2 rsu_id ki1 ki2 dp1 dp2 #i #j.
         CreateSession(ppid1, rsu_id, ki1, dp1) @ i &
         CreateSession(ppid2, rsu_id, ki2, dp2) @ j & not(ppid1 = ppid2)
@@ -875,7 +822,7 @@ lemma session_isolation:
     ==> not(Ex #l. K(ki2) @ l)"  // Adversary doesn't know ki2
 
 // Cross-session Unlinkability
-lemma cross_session_unlinkability:
+lemma x_sess_unlink:
     "All msg1 msg2 ring_pairs1 ring_pairs2 sig1 sig2 ts1 ts2 ppid1 ppid2 rsu1 rsu2 ki1 ki2 dp1 dp2 vid1 vid2 #i #j #k #l.
         MessageCreated(rsu1, <msg1, ring_pairs1, sig1, ppid1, ts1>) @ i &
         UseSession(ppid1, rsu1, ki1, dp1) @ i &
@@ -890,79 +837,45 @@ lemma cross_session_unlinkability:
             RTAAction(rta2) @ l"
 
 // Identity Tracing by Authorized Entity Only
-lemma authorized_resolution:
+lemma auth_resolve:
     "All ppid vid #i.
         RevealPseudonym(ppid, vid) @ i
     ==> Ex rta. RTAAction(rta) @ i"
-*/
 
-// Base case: Any RecordML must come from a valid registration event
-lemma recordml_equivalance [use_induction,reuse]:
-    "All rta vid ppid vp kk #j.
-        RecordML(rta, vid, ppid, vp, kk) @ #j
-    ==> (Ex req_id #i. RegisterVehicle(rta, vid, ppid, vp, kk, req_id) @ #i & #i = #j) |
-        (Ex req_id #i. TransferVehicle(rta, vid, ppid, vp, kk, req_id) @ #i & #i = #j) |
-        (Ex req_id #i. ReregisterVehicle(rta, vid, ppid, vp, kk, req_id) @ #i & #i = #j) |
-        (Ex #i. MLAdd(rta, vid, ppid, vp, kk) @ #i & #i = #j)"
-lemma recordml_origin [use_induction,reuse]:
-    "All rta vid ppid vp kk req_id #j.
-        TransferVehicle(rta, vid, ppid, vp, kk, req_id) @ #j &
-        not(Ex rta_other ppid_other vp_other kk_other req_id_other #k. ReregisterVehicle(rta_other, vid, ppid_other, vp_other, kk_other, req_id_other) @ k ) &
-        not(Ex rta_other ppid_other vp_other kk_other #k. MLAdd(rta_other, vid, ppid_other, vp_other, kk_other) @ k )
-    ==> (Ex rta_orig req_id_orig #i. RegisterVehicle(rta_orig, vid, ppid, vp, kk, req_id_orig) @ #i & #i < #j)"
-    
-/*
-// Helper 1: TransferML only happens after a valid TransferVehicle
-lemma transfer_ml_source [reuse]:
-  "All rta_old rta_new vid req_id #i.
-   TransferML(rta_old, rta_new, vid, req_id) @ #i
-   ==> Ex ppid vp kk #i. 
-       TransferVehicle(rta_new, vid, ppid, vp, kk, req_id) @ #i &
-       PPIDTransferExpired(rta_old, ppid, vp, kk) @ #i"
-    
-// Helper 2: TransferVehicle always creates a RecordML at the new RTA
-lemma transfer_vehicle_creates_record [reuse]:
-  "All rta_new vid ppid vp kk req_id #i.
-   TransferVehicle(rta_new, vid, ppid, vp, kk, req_id) @ #i
-   ==> Ex #j. RecordML(rta_new, vid, ppid, vp, kk) @ #j & #i = #j"
-*/
-
-// Helper 4: Record exists before it can be transferred
-//lemma record_exists_before_transfer [use_induction,reuse]:
-//  "All rta_old rta_new vid req_id #j.
-//   TransferML(rta_old, rta_new, vid, req_id) @ #j
-//   ==> Ex ppid vp kk #i. 
-//       RecordML(rta_old, vid, ppid, vp, kk) @ #i &
-//       #i < #j"
-/*
-// Member List Consistency
-lemma ml_consistency:
-    "All rta vid ppid vp kk #i.
-        RecordML(rta, vid, ppid, vp, kk) @ #i
-    ==> not(Ex rta2 ppid2 vp2 kk2 #j.
-            RecordML(rta2, vid, ppid2, vp2, kk2) @ #j & #j < #i &
-            not(Ex #k. MLExpire(rta2, ppid2, vp2, kk2) @ #k &  #k = #i) &
-            not(Ex #k. PPIDExpired(rta2, ppid2, vp2, kk2) @ #k & #j < #k & #k < #i) &
-            not(Ex #k. ReauthPPIDExpired(rta2, ppid2, vp2, kk2) @ #k & #j < #k & #k < #i) &
-            not(Ex #k. PPIDTransferExpired(rta2, ppid2, vp2, kk2) @ #k & #j < #k & #k = #i))"
-
-lemma ml_consistency_alt [use_induction]:
-  "All rta1 rta2 vid ppid1 ppid2 vp1 vp2 kk1 kk2 #i #j.
-       RecordML(rta1, vid, ppid1, vp1, kk1) @ #i &
-       RecordML(rta2, vid, ppid2, vp2, kk2) @ #j & #i < #j
-    ==> (Ex #k. MLExpire(rta1, ppid1, vp1, kk1) @ #k & #i < #k & #k = #j) |
-        (Ex #k. PPIDExpired(rta1, ppid1, vp1, kk1) @ #k & #i < #k & #k < #j) |
-        (Ex #k. ReauthPPIDExpired(rta1, ppid1, vp1, kk1) @ #k & #i < #k & #k < #j) |
-        (Ex #k. PPIDTransferExpired(rta1, ppid1, vp1, kk1) @ #k & #i < #k & #k = #j)"
-*/
-
-/*
 // Long-term Binding Preservation
-lemma binding_preservation:
+lemma bind_preserve:
     "All rta2 vid ppid1 ppid2 vp2 kk2 msg ring_pairs ts #i #j.
         MessageAuthenticated(ppid1, msg, ring_pairs, ts) @ i &
         RecordML(rta2, vid, ppid2, vp2, kk2) @ j & i < j
     ==> Ex rta_org vp kk #k.
             RecordML(rta_org, vid, ppid1, vp, kk) @ k & k < i"
 */
+// Member List Consistency
+// Prove this lemma separately with restriction max_recordml to prevent infinite loop
+lemma ml_consistency:
+  "All rta1 rta2 vid ppid1 ppid2 vp1 vp2 kk1 kk2 #i #j.
+       RecordML(rta1, vid, ppid1, vp1, kk1) @ #i &
+       RecordML(rta2, vid, ppid2, vp2, kk2) @ #j & #i < #j &
+       not(Ex rta3 ppid3 vp3 kk3 #l. RecordML(rta3, vid, ppid3, vp3, kk3) @ #l & not(#i=#l) & not(#l=#j))
+    ==> (Ex #k. MLUpdatedExpire(rta1, ppid1, vp1, kk1) @ #k & #k = #j) |
+        (Ex #k. PPIDExpired(rta1, ppid1, vp1, kk1) @ #k & #i < #k & #k < #j) |
+        (Ex #k. ReauthPPIDExpired(rta1, ppid1, vp1, kk1) @ #k & #i < #k & #k < #j) |
+        (Ex #k. PPIDTransferExpired(rta1, ppid1, vp1, kk1) @ #k & #k = #j) |
+        (Ex req_id #k. ReregisterVehicle(rta2, vid, ppid2, vp2, kk2, req_id) @ #k & #k = #j)"
+
+// This restriction runs with ml_consistency lemma only to prevent infinite loop
+restriction max_recordml:
+    "All rta1 rta2 rta3 rta4
+         vid1 vid2 vid3 vid4
+         ppid1 ppid2 ppid3 ppid4
+         vp1 vp2 vp3 vp4
+         kk1 kk2 kk3 kk4
+         #i1 #i2 #i3 #i4.
+        RecordML(rta1, vid1, ppid1, vp1, kk1) @ #i1 &
+        RecordML(rta2, vid2, ppid2, vp2, kk2) @ #i2 &
+        RecordML(rta3, vid3, ppid3, vp3, kk3) @ #i3 &
+        RecordML(rta4, vid4, ppid4, vp4, kk4) @ #i4 &
+        i1 < i2 & i2 < i3 & i3 < i4
+    ==> F"
+
 end
