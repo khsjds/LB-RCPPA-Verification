@@ -5,20 +5,16 @@ LB-RCPPA is a lattice-based authentication and privacy-preserving framework desi
 
 The Tamarin models provided here serve as the formal verification framework supporting the theoretical security proofs presented in the LB-RCPPA research, using Tamarin Prover v1.10.0.
 
-- Currently we're using the following command to start the proving process: 
-tamarin-prover --prove lbrcppa.spthy --derivcheck-timeout=120 -c=30
-
-- Since the Memeber List life cycle is complex and different kinds of looping occurs, we prove lemma ml_consistency separately -- that is, we comment out lemma ml_consistency and restriction max_recordml (ln:853-879) to run all other lemmas, and comment out all other lemmas (ln:778-851) to run lemma ml_consistency along with restriction max_recordml. 
-
 ---
 
 # Repository Structure
+```bash
 LB-RCPPA-VERIFICATION/
 ├── old/                   # Archived or earlier versions of Tamarin models and testing files
 ├── lbrcppa.spthy          # Current finalized Tamarin model for LB-RCPPA
 └── README.md              # This file
-
-Directory "old" contains all used examples/past versions of models. There'll always be a copy of current lbrcppa.spthy in the old folder (currently lbrcppa05.spthy)
+```
+The directory old/ contains development versions, experimental models, and historical copies of previous lbrcppa.spthy. The latest copy of lbrcppa.spthy always corresponds to the most updated model (currently synchronized with lbrcppa05.spthy).
 
 ---
 
@@ -40,8 +36,6 @@ The formal Tamarin models reflect the six protocol phases designed in LB-RCPPA:
 
 The Tamarin models specify the protocol logic, message flows, and adversary interactions across these six phases.
 
----
-
 ## Verified Security Properties
 
 The models verify several key security properties relevant to VANET environments, including:
@@ -53,3 +47,20 @@ The models verify several key security properties relevant to VANET environments
 - **Binding Preservation for Membership Resolution**  
 - **Forward Security for Credential Updates**  
 - **Resistance to Replay Attacks and Key Reuse**
+
+## Execution
+- Currently we're using the following command to start the proving process: 
+```bash
+tamarin-prover --prove lbrcppa.spthy --derivcheck-timeout=120 -c=30
+```
+
+- Since the Memeber List life cycle is complex and different kinds of looping occurs, we prove lemma ml_consistency separately -- that is, we comment out lemma ml_consistency and restriction max_recordml (ln:853-879) to run all other lemmas, and comment out all other lemmas (ln:778-851) to run lemma ml_consistency along with restriction max_recordml. 
+
+---
+
+# Contact
+
+For questions or collaboration:
+
+Tao-hsiang Chang
+e-mail: tchang@cs.nccu.edu.tw
