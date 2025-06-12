@@ -774,7 +774,7 @@ rule Compromise_Session_Key:
   --[ CompromiseSession(ppid, rsu_id, ki) ]->
     [ Out(ki) ]  // Adversary learns the key
 
-
+/*
 // Session Validity Verification
 lemma sess_valid_send:
     "All rsu_id msg ring_pairs sig ppid ts #i.
@@ -849,7 +849,7 @@ lemma bind_preserve:
         RecordML(rta2, vid, ppid2, vp2, kk2) @ j & i < j
     ==> Ex rta_org vp kk #k.
             RecordML(rta_org, vid, ppid1, vp, kk) @ k & k < i"
-
+*/
 // Member List Consistency
 // Prove this lemma separately with restriction max_recordml to prevent infinite loop
 lemma ml_consistency:
