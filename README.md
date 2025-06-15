@@ -10,7 +10,7 @@ The Tamarin models provided here serve as the formal verification framework supp
 # Repository Structure
 ```bash
 LB-RCPPA-VERIFICATION/
-├── old/                   # Archived or earlier versions of Tamarin models and testing files
+├── Archived/              # Archived or earlier versions of Tamarin models and testing files
 ├── lbrcppa.spthy          # Current finalized Tamarin model for LB-RCPPA
 └── README.md              # This file
 ```
@@ -54,11 +54,15 @@ The models verify several key security properties relevant to VANET environments
 tamarin-prover --prove lbrcppa.spthy --derivcheck-timeout=120 -c=30
 ```
 
-- Due to the complex Member List life cycle, the lemma ml_consistency is proven separately:
-  1. **Prove all lemmas except ml_consistency**:
-   Comment out lemma ml_consistency and restriction max_recordml (lines 853-879)
-  2. **Prove ml_consistency**:
-   Comment out all other lemmas (lines 778-851), enable ml_consistency and restriction max_recordml
+- Due to the complex Member List life cycle, the lemma ml_consistency, auth_resolve and ppid_unlink is proven separately:
+  1. **Prove all other lemmas**:
+   Comment out lemma ml_consistency through restriction max_recordml (lines 889-927).
+  2. **Prove ml_consistency, auth_resolve and ppid_unlink**:
+   Enable ml_consistency through restriction max_recordml, and prove separately using:
+   ```bash
+   tamarin-prover --prove=[LEMMA NAME] lbrcppa.spthy --derivcheck-timeout=120 -c=30
+   ```
+   Put the specific lemma in [LEMMA NAME] to start the process.
 
 ---
 
