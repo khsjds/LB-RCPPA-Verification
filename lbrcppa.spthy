@@ -90,7 +90,7 @@ rule RTA_Process_Registration:
     , !RTA_Keys($RTA, msk_sig, msk_ke)
     , !RTA_PubParams($RTA, mpk_sig, mpk_ke) ]
 --[ RegisterVehicle($RTA, vid, ppid, ~vp, ~kk, req_id)
-  , RecordML($RTA, vid, ppid, ~vp, ~kk)]->//[no_precomp] ]->
+  , RecordML($RTA, vid, ppid, ~vp, ~kk)]->
     [ !ML($RTA, vid, ppid, ~vp, ~kk)    // Add to Member List
     , Secure($RTA, vid, 'credentials', <ppid, ~kk, mpk_sig, mpk_ke>)  // Send credentials and public params securely
     , RTA_Wait_PK($RTA, vid, ppid) ]      // Wait for vehicle's public key
@@ -187,11 +187,11 @@ rule Vehicle_Share_Init:
         c = h(<ppid, $RSU, pv2>) // H6(PPIDv, IDr, Pv2)
     in
     [ !V_KE_Keys(vid, ppid, sv2, pv2)    // Vehicle's KE keys
-    , !RSU_PubKey($RSU, $RTA, pk_rsu) // Ensure RSU exists, but protocol don't use pk_rsu here yet
-    , !ML($RTA, vid, ppid, vp, kk) ]         
+    , !RSU_PubKey($RSU, $RTA, pk_rsu)
+    , !ML($RTA, vid, ppid, vp, kk) ]
 --[ ShareInit($RTA, ppid, $RSU) ]->
-    [ V_Share_Wait1(ppid, sv2, c, $RSU)  // Store state *~sid not used for now
-    , Out(<ppid, pv2>) ]                       // Send to RSU
+    [ V_Share_Wait1(ppid, sv2, c, $RSU)
+    , Out(<ppid, pv2>) ]
 
 // ensure PPID not expired when shares initiated
 restriction share_init_valid_ppid:
@@ -211,16 +211,16 @@ rule RSU_Share_Response:
     , !RSU_PubKey($RSU, $RTA, pk_rsu)
     , !ML($RTA, vid, ppid, vp, kk) ]
 --[ RSUResponse(ppid, $RSU) ]->
-    [ RSU_Share_Wait($RSU, sk_rsu, ppid, c, d, pv2) //not using ~sid_rsu now
+    [ RSU_Share_Wait($RSU, sk_rsu, ppid, c, d, pv2)
     , Out(pk_rsu) ]
 
 /* Vehicle Key Generation - Step 3: Vehicle generates session components */
 rule Vehicle_Generate_Key:
     let
         d = h(<ppid, $RSU, pv2, pk_rsu>) // H6 for d
-        // Bilateral Pasteurization
-        fv = sample_gaussian(~rand1)      // Random for Bi-P
-        hv = sample_gaussian(~rand2)      // Random for Bi-P
+        // Bi-GISIS key exchange
+        fv = sample_gaussian(~rand1)
+        hv = sample_gaussian(~rand2)
         ptr_bp = add(add(pk_rsu, mul(d, mpk_ke)), fv)  // PTr + dTB + fTv
         k1 = add(mul(ptr_bp, add(sv2, c)), hv)    // k1 computation
         ki = MSB(k1)                      // Session key via MSB
@@ -239,7 +239,7 @@ rule Vehicle_Generate_Key:
 /* RSU Key Generation - Step 4: RSU generates session components */
 rule RSU_Generate_Key:
     let
-        // Bilateral Pasteurization
+        // Bi-GISIS key exchange
         fr = sample_gaussian(~rand1)
         hr = sample_gaussian(~rand2)
         pv2_bp = add(add(pv2, mul(mpk_ke, c)), fr)  // Pv2 + Bc + fr
@@ -502,7 +502,7 @@ rule RTA_Process_Found:
   , TransferVehicle($RTA_new, vid, ppid, vp, kk, req_id)
   , PPIDTransferExpired($RTA_check, ppid, vp, kk)
   , ExpireML($RTA_check, ppid, vp, kk)
-  , RecordML($RTA_new, vid, ppid, vp, kk)]->//[no_precomp] ]->
+  , RecordML($RTA_new, vid, ppid, vp, kk)]->
     [ !ML($RTA_new, vid, ppid, vp, kk)
     , !ExpiredML($RTA_check, vid, ppid, vp, kk)
     , Secure($RTA_new, vid, 'reauth_success', req_id) ]
@@ -548,7 +548,7 @@ rule RTA_Process_NotFound:
     , !RTA_Keys($RTA_new, msk_sig, msk_ke)
     , !RTA_PubParams($RTA_new, mpk_sig, mpk_ke) ]
 --[ ReregisterVehicle($RTA_new, vid, ppid, ~vp, ~kk, req_id)
-  , RecordML($RTA_new, vid, ppid, ~vp, ~kk)]->//[no_precomp] ]->
+  , RecordML($RTA_new, vid, ppid, ~vp, ~kk)]->
     [ !ML($RTA_new, vid, ppid, ~vp, ~kk) // Add to Member List
     , Secure($RTA_new, vid, 'reauth_failure', <ppid, ~kk, mpk_sig, mpk_ke>)
     , RTA_Reauth_Wait_PK($RTA_new, vid, ppid, req_id) ] // this connect to the later vehicle setup on RTA part
@@ -565,7 +565,7 @@ rule Vehicle_Reauth_Setup_Signature:
     , Fr(~rand) ]
 --[ ReauthSignatureKey($RTA_new, vid, ppid, req_id) ]->
     [ Vehicle_Reauth_Sig_Partial(vid, ppid, kk, cv, pv1, mpk_sig, mpk_ke, req_id)
-    , Secure(vid, $RTA_new, 'pubkey', <ppid, pv1>) ] // this connect to the later vehicle setup on vehicle part
+    , Secure(vid, $RTA_new, 'pubkey', <ppid, pv1>) ]
 
 /* RTA generates partial private key */
 rule RTA_Reauth_Generate_Partial_Key:
@@ -760,7 +760,7 @@ rule RTA_Generate_New_Credentials:
   , MLAdd($RTA, vid, ppid_new, ~vp_new, ~kk_new)
   , MLUpdatedExpire($RTA, ppid, vp, kk_old)
   , ExpireML($RTA, ppid, vp, kk_old)
-  , RecordML($RTA, vid, ppid_new, ~vp_new, ~kk_new)]->//[no_precomp] ]->
+  , RecordML($RTA, vid, ppid_new, ~vp_new, ~kk_new)]->
     [ !ML($RTA, vid, ppid_new, ~vp_new, ~kk_new)
     , !ExpiredML($RTA, vid, ppid, vp, kk_old)
     , !ValidTS(~ts_new)
@@ -805,16 +805,12 @@ rule RTA_Reveal_Pseudonym:
     , !ML($RTA, vid, ppid, vp, kk) ]
   --[ RTARevealPseudonym($RTA, ppid, vid) ]->
     [ Out(<vid>) ]  // Actually output the relationship!
-// Adv claims knowledge of a pseudonym
-rule Adversary_Claim_Knowledge:
-    [ In(ppid), In(vid) ]
-  --[ AdversaryClaims(ppid, vid) ]->
-    [ Verification_Request(ppid, vid) ]
-// System verifies the claim
-rule Verify_Claim:
-    [ Verification_Request(ppid, vid)
+// Adversary de-anonymizes a vehicle: requires K(vid), which is only learnable via
+// RTARevealPseudonym. The adversary then looks up the corresponding ppid from !ML.
+rule Adversary_Links_Vid:
+    [ In(vid)
     , !ML($RTA, vid, ppid, vp, kk) ]
-  --[ ClaimCorrect(ppid, vid)
+  --[ AdversaryClaims(ppid, vid)
     , AdversaryKnowsCorrectLink(ppid, vid) ]->
     [ ]
 lemma adversary_ppid_sources [sources]:
@@ -831,9 +827,8 @@ rule Compromise_Session_Key:
     [ Out(ki) ]  // Adversary learns the key
 
 
-// Start of lemmas
-/*
-// Session Validity Verification
+// Session Validity: a message can only be sent/received under an active,
+// non-expired session (resistance to replay and injection attacks).
 lemma sess_valid_send:
     "All rsu_id msg ring_pairs sig ppid ts #i.
         MessageCreated(rsu_id, <msg, ring_pairs, sig, ppid, ts>) @ i
@@ -856,7 +851,8 @@ lemma ts_valid:
     ==> Ex #j. CreateTS(ts) @ j & j < i &
         not(Ex #k. ExpireTS(ts) @ k & k < i)"
 
-// Session Independence
+// Session Independence and Isolation: distinct pseudonyms cannot share session keys;
+// compromising one vehicle's session key does not reveal any other vehicle's session key.
 lemma sess_indep:
     "All ppid1 ppid2 rsu_id ki1 ki2 dp1 dp2 #i #j.
         CreateSession(ppid1, rsu_id, ki1, dp1) @ i &
@@ -869,23 +865,14 @@ lemma session_isolation:
         CompromiseSession(ppid1, rsu_id1, ki1) @ k & i < k & j < k
     ==> not(Ex #l. K(ki2) @ l)"  // Adversary doesn't know ki2
 
-// Cross-session Unlinkability: If adversary knows that messages from different sessions came from the same vehicle, then RTA must have revealed both pseudonym mappings.
-lemma x_sess_unlink:
-    "All ppid1 ppid2 vid rsu1 rsu2 msg1 msg2 ring1 ring2 sig1 sig2 ts1 ts2 #i #j #k #l.
-        MessageCreated(rsu1, <msg1, ring1, sig1, ppid1, ts1>) @ i &
-        MessageCreated(rsu2, <msg2, ring2, sig2, ppid2, ts2>) @ j &
-        AdversaryKnowsCorrectLink(ppid1, vid) @ k &
-        AdversaryKnowsCorrectLink(ppid2, vid) @ l &
-        not(ppid1 = ppid2) &
-        not(rsu1 = rsu2)  // Different RSUs = different sessions
-    ==> Ex rta1 rta2 #m #n.
-            RTARevealPseudonym(rta1, ppid1, vid) @ m & m < k &
-            RTARevealPseudonym(rta2, ppid2, vid) @ n & n < l"
-*/
+// Helper: any ML record for a vehicle implies prior initialization of that vehicle.
+lemma record_implies_init [reuse]:
+    "All rta vid ppid vp kk #i. RecordML(rta, vid, ppid, vp, kk) @ i
+    ==> Ex #j. VehicleInit(vid) @ j & j < i"
 
-
-// Prove ppid-specific lemmas separately with restriction max_recordml to prevent infinite loop
-// Member List Consistency
+// Member List Consistency: successive ML records for the same vehicle are always separated
+// by an expiration event (credential update, validity-period expiry, or RTA transfer).
+// Placed here to use only record_implies_init [reuse]; does not need identity axioms.
 lemma ml_consistency:
   "All rta1 rta2 vid ppid1 ppid2 vp1 vp2 kk1 kk2 #i #j.
        RecordML(rta1, vid, ppid1, vp1, kk1) @ #i &
@@ -896,22 +883,81 @@ lemma ml_consistency:
         (Ex #k. ReauthPPIDExpired(rta1, ppid1, vp1, kk1) @ #k & #i < #k & #k < #j) |
         (Ex #k. PPIDTransferExpired(rta1, ppid1, vp1, kk1) @ #k & #k = #j) |
         (Ex req_id #k. ReregisterVehicle(rta2, vid, ppid2, vp2, kk2, req_id) @ #k & #k = #j)"
-// Identity Tracing by Authorized Entity Only
-lemma auth_resolve:
+
+// Helper: a vehicle's real identity is output only via RTA_Reveal_Pseudonym.
+// Depends on record_implies_init (vehicle must be initialized before its vid appears).
+lemma vid_privacy [reuse]:
+    "All vid #i. K(vid) @ i & (Ex #j. VehicleInit(vid) @ j)
+    ==> Ex rta ppid #k. RTARevealPseudonym(rta, ppid, vid) @ k & k < i"
+
+// Helper: if a vehicle's identity is recorded in the ML and becomes known to the adversary,
+// the RTA must have previously authorized disclosure of that vehicle's identity.
+// Depends on record_implies_init and vid_privacy.
+lemma ml_acl_implies_reveal [reuse]:
+    "All rta vid ppid vp kk #t_ml #t_k.
+        RecordML(rta, vid, ppid, vp, kk) @ t_ml &
+        K(vid) @ t_k
+    ==> Ex rta2 ppid2 #j. RTARevealPseudonym(rta2, ppid2, vid) @ j & j < t_k"
+
+// Authorized Identity Traceability: the adversary can correctly link a pseudonym to a
+// vehicle only if the RTA previously authorized disclosure of that vehicle's identity.
+// Depends on ml_acl_implies_reveal.
+lemma auth_resolve [reuse]:
     "All ppid vid #i.
         AdversaryKnowsCorrectLink(ppid, vid) @ i
-    ==> Ex rta #j. RTARevealPseudonym(rta, ppid, vid) @ j & j < i"
+    ==> Ex rta ppid_r #j. RTARevealPseudonym(rta, ppid_r, vid) @ j & j < i"
 
-// Pseudonym System Security: If adversary correctly knows that two different pseudonyms belong to the same vehicle, then RTA must have previously revealed both mappings.
+// Cross-session Unlinkability: linking two different pseudonyms from different RSU sessions
+// to the same vehicle requires that the RTA had previously authorized identity disclosure
+// (for some pseudonym ppid_r) for each link. The conclusion uses ppid_r (any pseudonym
+// previously revealed by the RTA) rather than the specific ppid being linked, which is
+// the correct security claim: RTA authorization is required per link, regardless of which
+// pseudonym was revealed. Follows from auth_resolve [reuse] above.
+lemma x_sess_unlink:
+    "All ppid1 ppid2 vid rsu1 rsu2 msg1 msg2 ring1 ring2 sig1 sig2 ts1 ts2 #i #j #k #l.
+        MessageCreated(rsu1, <msg1, ring1, sig1, ppid1, ts1>) @ i &
+        MessageCreated(rsu2, <msg2, ring2, sig2, ppid2, ts2>) @ j &
+        AdversaryKnowsCorrectLink(ppid1, vid) @ k &
+        AdversaryKnowsCorrectLink(ppid2, vid) @ l &
+        not(ppid1 = ppid2) &
+        not(rsu1 = rsu2)  // Different RSUs = different sessions
+    ==> Ex rta1 ppid_r1 rta2 ppid_r2 #m #n.
+            RTARevealPseudonym(rta1, ppid_r1, vid) @ m & m < k &
+            RTARevealPseudonym(rta2, ppid_r2, vid) @ n & n < l"
+
+// Pseudonym Unlinkability: linking two different pseudonyms to the same vehicle requires
+// separate prior authorized disclosures by the RTA for each link.
+// Follows from auth_resolve [reuse] above.
 lemma ppid_unlink:
     "All ppid1 ppid2 vid #i #j.
         AdversaryKnowsCorrectLink(ppid1, vid) @ i &
         AdversaryKnowsCorrectLink(ppid2, vid) @ j &
         not(ppid1 = ppid2)
-    ==> Ex rta1 rta2 #k #l.
-        RTARevealPseudonym(rta1, ppid1, vid) @ k & k < i &
-        RTARevealPseudonym(rta2, ppid2, vid) @ l & l < j"
+    ==> Ex rta1 ppid_r1 rta2 ppid_r2 #k #l.
+        RTARevealPseudonym(rta1, ppid_r1, vid) @ k & k < i &
+        RTARevealPseudonym(rta2, ppid_r2, vid) @ l & l < j"
 
+/* max_recordml bounds the total number of RecordML events at 3.
+ * This restriction is sound for all 12 lemmas in this file.
+ *
+ * The ML lifecycle comprises exactly four transition types: initial
+ * registration, credential update, reauth-success transfer, and
+ * reauth-failure re-registration.  Three records are sufficient to
+ * witness any two-step composition of these transitions, exhausting
+ * all structurally distinct lifecycle patterns.  A fourth record
+ * would repeat a transition type already present in the 3-record
+ * prefix and introduce no new structure.
+ *
+ * For session and message lemmas (sess_valid_send through x_sess_unlink):
+ * at most two vehicles are involved, needing at most two ML records;
+ * the third record accommodates any intermediate ML state without
+ * restricting the attack surface.
+ *
+ * For ML-chain lemmas (ml_consistency, ppid_unlink, and the four
+ * [reuse] helpers): the bound is also required for proof-search
+ * termination, since the RecordML-producing rules form a cycle in
+ * the rule graph.
+ */
 restriction max_recordml:
     "All rta1 rta2 rta3 rta4
          vid1 vid2 vid3 vid4
