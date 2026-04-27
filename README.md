@@ -1,7 +1,7 @@
 # LB-RCPPA Formal Verification Repository
 This repository contains the Tamarin Prover models for formally verifying the security properties of the **Lattice-Based Ring Signature-Based Conditional Privacy Preserving Authentication (LB-RCPPA)** protocol.
 
-LB-RCPPA is a lattice-based authentication and privacy-preserving framework designed for secure communications in Vehicular Ad Hoc Networks (VANETs). The formal models verify the security properties of LB-RCPPA under post-quantum assumptions.  
+LB-RCPPA is a lattice-based authentication and privacy-preserving framework designed for secure communications in Vehicular Ad Hoc Networks (VANETs). The formal models verify the security properties of LB-RCPPA under post-quantum assumptions.
 
 The Tamarin models provided here serve as the formal verification framework supporting the theoretical security proofs presented in the LB-RCPPA research, using Tamarin Prover v1.10.0.
 
@@ -10,81 +10,83 @@ The Tamarin models provided here serve as the formal verification framework supp
 # Repository Structure
 ```bash
 LB-RCPPA-VERIFICATION/
-├── Archived/              # Archived or earlier versions of Tamarin models and testing files
+├── Archived/              # Previous versions of Tamarin models and experimental files
 ├── lbrcppa.spthy          # Current finalized Tamarin model for LB-RCPPA
 └── README.md              # This file
 ```
-The directory Archived/ contains development versions, experimental models, and historical copies of previous lbrcppa.spthy. The latest copy of lbrcppa.spthy always corresponds to the most updated model (currently synchronized with lbrcppa05.spthy).
+The `Archived/` directory contains development and historical versions. The latest `lbrcppa.spthy` always corresponds to the most current verified model.
 
 ---
 
 # Model Description
-The formal Tamarin models reflect the six protocol phases designed in LB-RCPPA:
+The formal Tamarin model reflects the six protocol phases designed in LB-RCPPA:
 
-1. **System Setup**  
+1. **System Setup**
    Generation of system parameters, RSU key deployment, and initialization of vehicle TPDs.
-2. **Vehicle Shares Production**  
+2. **Vehicle Shares Production**
    Credential shares generation through interactive key exchange protocols.
-3. **Signature Generation**  
+3. **Signature Generation**
    Construction of lattice-based ring signatures for secure message authentication.
-4. **Message Verification**  
+4. **Message Verification**
    Signature verification by RSUs or other vehicles upon message reception.
-5. **Reauthentication**  
+5. **Reauthentication**
    Lightweight session reauthentication for continuous communication.
-6. **Member List Update**  
+6. **Member List Update**
    Secure credential update and pseudonym regeneration procedures.
 
-The Tamarin models specify the protocol logic, message flows, and adversary interactions across these six phases.
+The Tamarin model specifies the protocol logic, message flows, and adversary interactions across all six phases.
 
-All 12 lemmas in `lbrcppa.spthy` are verified. The table below maps each lemma to the security property it establishes.
+## Modelling Notes
 
-| Lemma | Property | Steps |
-|-------|----------|-------|
-| `ts_valid` | Timestamp validity — a verified timestamp was freshly created and has not yet expired (replay protection) | 2 |
-| `sess_valid_send` | Session validity on send — a message can only be created under an active, non-expired session | 2 |
-| `sess_valid_recv` | Session validity on receive — a message can only be received under an active, non-expired session | 2 |
-| `sess_indep` | Session independence — two distinct pseudonyms cannot share a session key with the same RSU | 2 |
-| `session_isolation` | Session isolation — compromising one vehicle's session key does not reveal another vehicle's session key | 2 |
-| `x_sess_unlink` | Cross-session unlinkability — linking two pseudonyms to the same vehicle across sessions requires prior authorized identity disclosure by the RTA for each link | 2 |
-| `record_implies_init` *(helper)* | Any ML record for a vehicle implies that vehicle was initialized first | 11 |
-| `vid_privacy` *(helper)* | A vehicle's real identity is output only via `RTA_Reveal_Pseudonym`; it is otherwise unreachable by the adversary | 3 |
-| `ml_acl_implies_reveal` *(helper)* | If a vehicle's identity is known and is in the ML, then the RTA must have previously authorized its disclosure | 4 |
-| `auth_resolve` | Authorized identity traceability — the adversary can correctly link a pseudonym to a vehicle only if the RTA previously authorized disclosure of that vehicle's identity | 6 |
-| `ppid_unlink` | Pseudonym unlinkability — linking two different pseudonyms to the same vehicle requires two separate authorized disclosures by the RTA | 2 |
-| `ml_consistency` | Member list consistency — successive ML records for the same vehicle are separated by an expiration event (update, transfer, or validity-period expiry) | 59 |
+- **Ring size**: The model uses a ring of size p=3 (one signer + two public ring members) for source precomputation tractability. Privacy properties are independent of ring cover size.
+- **Ring member sourcing**: Ring members 2 and 3 are sourced via `In()` — their public keys are network-observable, which is the correct Dolev-Yao treatment. The signer's key is bound to the persistent `!V_Sig_Keys` fact.
+- **Session key abstraction**: Session keys (`ki`) are modelled as fresh nonces (`Fr(~ki)`), abstracting the Bi-GISIS key exchange computation without introducing symbolic equation triggers.
+- **Heuristics**: `session_key_secrecy` and `recordml_transition` use `[heuristic=I]` (oldest-goal-first) to prevent proof-search divergence on adversary-supplied terms.
+
+## Verified Security Properties
+
+The model verifies the following security properties (16 lemmas total):
+
+| Lemma | Description |
+|-------|-------------|
+| `sess_valid_send` | Messages sent only under a valid session |
+| `sess_valid_recv` | Messages received only under a valid session |
+| `ts_valid` | Timestamps valid when verified |
+| `sess_indep` | Distinct pseudonyms carry distinct session keys |
+| `session_isolation` | Session keys remain distinct even when both are compromised |
+| `session_key_secrecy` | Adversary cannot learn session key without explicit compromise |
+| `regattempt_implies_init` | Registration requires prior vehicle initialization |
+| `record_implies_init` | ML records imply prior vehicle initialization |
+| `vid_privacy` | Vehicle real identity known only via authorized RTA reveal |
+| `ml_acl_implies_reveal` | ML-recorded identity requires prior RTA disclosure |
+| `ml_consistency` | Successive ML records separated by expiration events |
+| `auth_resolve` | Pseudonym-to-vehicle links require prior RTA authorization |
+| `expireml_implies_witness` | Every ML expiration has a specific typed witness |
+| `recordml_transition` | ML lifecycle transitions are well-ordered |
+| `x_sess_unlink` | Cross-session pseudonym links require per-link RTA authorization |
+| `ppid_unlink` | Pseudonym unlinkability: each link requires separate RTA authorization |
 
 ---
 
-## Execution
+# Execution
 
-All proofs use `lbrcppa.spthy` with Tamarin Prover v1.10.0. Never run two Tamarin instances in parallel (memory exhaustion risk). A combined `--prove` run exceeds available memory (OOM-killed after ~160 min on a 64 GB machine); lemmas must be proved individually.
+Full verification (all 16 lemmas):
 
-**Prove a specific lemma:**
 ```bash
-tamarin-prover lbrcppa_v2.spthy --prove=<lemma_name> --derivcheck-timeout=120
+tamarin-prover lbrcppa.spthy --prove --auto-sources \
+  --derivcheck-timeout=0 +RTS -M32G -N4 -RTS
 ```
-Replace `<lemma_name>` with any lemma from the table above (e.g., `auth_resolve`, `ml_consistency`).
 
-**Note on `[reuse]` helpers:** Tamarin injects `[reuse]`-annotated lemmas as axioms for all syntactically subsequent lemmas, regardless of proof order. This means individual lemma runs are independent — you can prove them in any order. However, the helper lemmas (`record_implies_init`, `vid_privacy`, `ml_acl_implies_reveal`, `auth_resolve`) must still be proved explicitly; without their own proof runs they are unverified assumptions.
+**Resource requirements**: approximately 32 GB peak RAM, several hours of CPU time.
 
-**Proof order (matching file order):**
+To prove a single lemma:
+
 ```bash
-# Session lemmas (fast, ~40s each; no reuse axioms needed)
-tamarin-prover lbrcppa_v2.spthy --prove=sess_valid_send --derivcheck-timeout=120
-tamarin-prover lbrcppa_v2.spthy --prove=sess_valid_recv --derivcheck-timeout=120
-tamarin-prover lbrcppa_v2.spthy --prove=ts_valid --derivcheck-timeout=120
-tamarin-prover lbrcppa_v2.spthy --prove=sess_indep --derivcheck-timeout=120      # ~8 min
-tamarin-prover lbrcppa_v2.spthy --prove=session_isolation --derivcheck-timeout=120  # ~8 min
-# Helper lemmas (prove to close the reuse chain)
-tamarin-prover lbrcppa_v2.spthy --prove=record_implies_init --derivcheck-timeout=120
-tamarin-prover lbrcppa_v2.spthy --prove=ml_consistency --derivcheck-timeout=120  # ~8 min
-tamarin-prover lbrcppa_v2.spthy --prove=vid_privacy --derivcheck-timeout=120
-tamarin-prover lbrcppa_v2.spthy --prove=ml_acl_implies_reveal --derivcheck-timeout=120  # ~7 min
-tamarin-prover lbrcppa_v2.spthy --prove=auth_resolve --derivcheck-timeout=120    # ~8 min
-# Identity / unlinkability lemmas (benefit from auth_resolve [reuse])
-tamarin-prover lbrcppa_v2.spthy --prove=x_sess_unlink --derivcheck-timeout=120
-tamarin-prover lbrcppa_v2.spthy --prove=ppid_unlink --derivcheck-timeout=120
+tamarin-prover lbrcppa.spthy --prove=<LEMMA_NAME> --auto-sources \
+  --derivcheck-timeout=0 +RTS -M32G -N4 -RTS
 ```
+
+Recommended proof order (dependencies): trivials → `session_key_secrecy` → `regattempt_implies_init` → `record_implies_init` → `expireml_implies_witness` → `recordml_transition` → remaining lemmas.
 
 ---
 
