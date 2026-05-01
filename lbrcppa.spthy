@@ -442,23 +442,6 @@ restriction binding_verification:
     ==> (Ex dv #j. BConstruction(B, dv, ppid, ts) @ j & j < i) &
         (Ex ring sig #k. MessagePackage(msg, ring, sig, ppid, ts) @ k & k < i)"
 
-/* Helper restriction for phase ordering.
- * Intent: message verification must occur during a valid (non-expired) session.
- * This intent is already enforced by valid_session_when_used:
- *   Verify_Message emits UseSession → checked by valid_session_when_used.
- * T4 (v5): verify_after_session is kept in v4's form (ts matches pos-5, dp matches
- * ExpireSession pos-4 via shared variable). This form is vacuously satisfied because
- * VerifyTimestamp's pos-5 is a timestamp (ts, from CreateTS) while ExpireSession's
- * pos-4 is a duration period (dp, from Establish_Session) — they are distinct fresh
- * nonces that can never unify, making the antecedent unsatisfiable.
- * Consequence: restriction adds no new constraint; session ordering is solely via
- * valid_session_when_used. Correcting the variable positions to be non-vacuous causes
- * K() source analysis explosion in session_key_secrecy proof. */
-restriction verify_after_session:
-    "All ppid_r ppid msg ts dp rsu_id ki #i #j.
-    VerifyTimestamp(ppid_r, ppid, msg, ts, dp) @ i &
-    ExpireSession(ppid_r, rsu_id, ki, dp) @ j
-    ==> #i < #j"
 
 /**************************************
  *     Phase 5: Reauthentication      *
