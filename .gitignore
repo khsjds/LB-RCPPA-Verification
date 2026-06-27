@@ -1,0 +1,8 @@
+# macOS
+.DS_Store
+
+# Dev versions with internal tracking comments (not for public release)
+lbrcppa_v*.spthy
+
+# Internal verification notes (timing data, internal step analysis)
+verification_status.md
