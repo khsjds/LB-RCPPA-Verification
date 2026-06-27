@@ -1,0 +1,24 @@
+theory REUSE_TEST
+begin
+rule start:
+  [ Fr(x) ]
+--[ Start(x) ]->
+  [ A(x) ]
+
+rule repeat:
+  [ A(x) ]
+--[ Loop(x) ]->
+  [ A(x) ]
+
+lemma AlwaysStarts [use_induction,reuse]:
+  "All x #i. Loop(x) @i ==> Ex #j. Start(x) @j"
+
+  rule finish:
+  [ A(x) ]
+--[ End(x) ]->
+  []
+
+lemma AlwaysStartsWhenEnds:
+  "All x #i. End(x) @i ==> Ex #j. Start(x) @j"
+
+end

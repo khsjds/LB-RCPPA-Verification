@@ -1,8 +1,22 @@
-# macOS
+# EasyCrypt
+*.eco
+*.vo
+*.glob
+
+# Tamarin
+*.spthy~
+*.th~
+
+# VSCode
+.vscode/
+*.code-workspace
+
+# OS specific
 .DS_Store
+Thumbs.db
 
 # Dev versions with internal tracking comments (not for public release)
 lbrcppa_v*.spthy
 
-# Internal verification notes (timing data, internal step analysis)
+# Internal verification notes (timing data, step analysis)
 verification_status.md
